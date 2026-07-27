@@ -66,6 +66,37 @@ TICK         = "#7d937f"
 
 DANGER       = "#ff6b6b"
 
+
+def _hex_rgba(hexc: str, a: int = 255):
+    h = hexc.lstrip("#")
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), a)
+
+
+def _glyph_path(name, draw_fn, size=(24, 24)) -> str:
+    """Draw a tiny PNG glyph to a temp file at import time and return a forward-slash path — so QSS
+    can theme the combo/spin arrows + the checkbox tick (Qt otherwise draws grey native Windows
+    glyphs). A FILE path is used (not a data: URI) because Qt's stylesheet url() does not load data
+    URIs; and PNG (not SVG) so no QtSvg image plugin is required."""
+    from PIL import Image, ImageDraw
+    import tempfile
+    import os as _os
+    d = _os.path.join(tempfile.gettempdir(), "hexpad_glyphs")
+    _os.makedirs(d, exist_ok=True)
+    p = _os.path.join(d, name + ".png")
+    im = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw_fn(ImageDraw.Draw(im))
+    im.save(p, "PNG")
+    return p.replace("\\", "/")               # QSS url() wants forward slashes, even on Windows
+
+
+# Themed glyphs: a dark tick for the mint checkbox, TEXT_DIM chevrons for combo/spin arrows.
+CHECK_PNG    = _glyph_path("check", lambda d: d.line([(6, 15), (12, 21), (22, 8)], fill=(10, 15, 13, 255),
+                                                     width=4, joint="curve"), (28, 28))
+CHEVDOWN_PNG = _glyph_path("chevdown", lambda d: d.line([(6, 9), (12, 15), (18, 9)], fill=_hex_rgba(TEXT_DIM),
+                                                        width=3, joint="curve"))
+CHEVUP_PNG   = _glyph_path("chevup", lambda d: d.line([(6, 15), (12, 9), (18, 15)], fill=_hex_rgba(TEXT_DIM),
+                                                      width=3, joint="curve"))
+
 # ---- radius scale (4 steps — collapsed from the old 11) --------------------
 R_SM   = 8
 R_MD   = 12
@@ -83,7 +114,7 @@ QMainWindow, QWidget#root { background: qlineargradient(x1:0, y1:0, x2:0.4, y2:1
 QLabel#display { font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
 QLabel#h1 { font-size: 16px; font-weight: 600; }
 QLabel#dim { color: $TEXT_DIM; }
-QLabel#section { color: $TEXT_DIM; font-size: 12px; font-weight: 600; letter-spacing: 0.4px; }
+QLabel#section { color: $TEXT_DIM; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; }
 QLabel#sliderval { color: $ACCENT; font-size: 12px; font-weight: 700; }
 QLabel#statchip { background: $SURFACE_2; border: 1px solid $BORDER; border-radius: 9px;
     padding: 3px 10px; color: $TEXT_DIM; font-size: 11px; font-weight: 600; }
@@ -111,6 +142,11 @@ QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border-
 QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: $BORDER_HOVER; }
 QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled { color: $TEXT_FAINT; }
 QComboBox::drop-down { subcontrol-origin: padding; subcontrol-position: center right; width: 20px; border: none; }
+QComboBox::down-arrow { image: url("$CHEVDOWN_PNG"); width: 12px; height: 12px; }
+QSpinBox::up-button { subcontrol-origin: border; subcontrol-position: top right; width: 18px; border: none; background: transparent; }
+QSpinBox::down-button { subcontrol-origin: border; subcontrol-position: bottom right; width: 18px; border: none; background: transparent; }
+QSpinBox::up-arrow { image: url("$CHEVUP_PNG"); width: 11px; height: 11px; }
+QSpinBox::down-arrow { image: url("$CHEVDOWN_PNG"); width: 11px; height: 11px; }
 QPushButton, QToolButton { background: $SURFACE_3; border: 1px solid $BORDER; border-radius: ${R_MD}px; padding: 7px 12px; }
 QPushButton:hover, QToolButton:hover { border-color: $BORDER_HOVER; }
 QPushButton:focus, QToolButton:focus { border-color: $ACCENT; }
@@ -121,7 +157,7 @@ QPushButton#primary:hover { background: $ACCENT_HOVER; border-color: $ACCENT_HOV
 QCheckBox { spacing: 8px; }
 QCheckBox::indicator { width: 16px; height: 16px; border-radius: 5px; border: 1px solid $BORDER; background: $SURFACE_2; }
 QCheckBox::indicator:hover { border-color: $BORDER_HOVER; }
-QCheckBox::indicator:checked { background: $ACCENT; border-color: $ACCENT; }
+QCheckBox::indicator:checked { background: $ACCENT; border-color: $ACCENT; image: url("$CHECK_PNG"); }
 QCheckBox::indicator:focus { border-color: $ACCENT; }
 QLabel#key { background: $KEY_BG; border: 2px solid $BORDER; border-radius: ${R_LG}px; padding: 0; }
 QLabel#key:hover { background: $DEVICE_TOP; }   /* the border glow now eases in via KeyTile's paint */
@@ -189,7 +225,7 @@ QPushButton#edtest:disabled { color: $TEXT_FAINT; border-color: $BORDER; }
    shadow/border/radius — adjacent cards are divided only by the editor splitter's 1px seam, so the
    whole bottom bar reads as one cohesive surface (inputs stay SURFACE_2 so they still pop). */
 QFrame#editorcard { background: $SURFACE_1; border: none; border-radius: 0; }
-QLabel#cardhdr { color: $TEXT_DIM; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
+QLabel#cardhdr { color: $TEXT; font-size: 13px; font-weight: 700; letter-spacing: 0.3px; }
 /* Compaction — inspector-scoped only (header / sidebar / Settings / dialogs keep their sizing) */
 #editorcard QPushButton, #editorcard QToolButton { padding: 6px 11px; }
 #editorcard QPushButton#primary { padding: 5px 12px; }
@@ -240,6 +276,11 @@ QToolButton#pageadd:hover { border-color: $ACCENT; color: $TEXT; }
 QSlider::groove:horizontal { height: 5px; background: $SURFACE_3; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: $ACCENT_DIM; border-radius: 2px; }
 QSlider::handle:horizontal { background: $ACCENT; width: 14px; margin: -6px 0; border-radius: 7px; }
+QSlider::handle:horizontal:hover { background: $ACCENT_HOVER; }
+QSlider::handle:horizontal:pressed { background: $ACCENT_HOVER; width: 16px; margin: -7px 0; border-radius: 8px; }
+QSlider::handle:horizontal:disabled { background: $BORDER_HOVER; }
+/* NB: deliberately NO QSlider:focus rule — a :focus rule on a slider sub-control makes Qt paint an
+   ugly full-width frame around the whole widget. Hover/pressed already give the handle feedback. */
 QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
 /* Thin, rounded, mint scrollbars (overlay-style) so they match the brand accent and never
    collide with content — replaces the chunky default Windows bar with steppers. */
