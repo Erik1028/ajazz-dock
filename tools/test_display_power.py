@@ -26,28 +26,37 @@ def ck(n, cond):
     print(("  ok " if cond else "FAIL ") + n)
     if not cond: fails.append(n)
 
+def apply_display():                                    # HID writes are deferred to the loop thread
+    if c._pending_display is not None:
+        c._apply_display(c._pending_display); c._pending_display = None
+
 ck("starts on", c._display_on is True)
 c.set_display(False)
+ck("set_display only FLAGS (deferred to the loop)", c._pending_display is False and c._display_on is True)
+apply_display()
 ck("off -> _display_on False", c._display_on is False)
 ck("off -> brightness 0 + cleared", c.dock.bright == 0 and c.dock.cleared >= 1)
 ck("off -> HAN sleep sent (true backlight off)", c.dock.slept == 1)
 ck("off -> render gated", (c._render_page() or True) and c.dock.pushes == 0)
-c.set_display(True)
+c.set_display(True); apply_display()
 ck("on -> brightness restored", c._display_on is True and c.dock.bright == 70)
 ck("on -> DIS wake sent", c.dock.woke == 1)
+ck("on -> idle timer reset (manual wake won't re-enter ambient)", time.time() - c._last_input < 1.0)
 
-# LONG press toggles the screen (btn8's implicit hold)
+# LONG press toggles the screen (btn8's implicit hold) — flagged, then applied by the loop
 before = c._display_on
 c._handle_event(Event(kind="button", index=7, pressed=True))
 ck("btn8 press deferred (no page change)", c.page_index == 0 and "btn8" in c._press)
 c._press["btn8"]["t"] -= 1.0                            # simulate held >0.5s
 c._check_gestures()
-ck("long-press toggled the screen", c._display_on == (not before) and c._press["btn8"]["hold_fired"])
+ck("long-press FLAGS a screen toggle", c._pending_display == (not before) and c._press["btn8"]["hold_fired"])
+apply_display()
+ck("long-press toggled the screen", c._display_on == (not before))
 c._handle_event(Event(kind="button", index=7, pressed=False))
 ck("long-press release fires no action", c.page_index == 0)
 
 # SHORT tap runs btn8's normal action (go to page 1), no toggle
-c.set_display(True); disp = c._display_on
+c.set_display(True); apply_display(); disp = c._display_on
 c._handle_event(Event(kind="button", index=7, pressed=True))
 c._handle_event(Event(kind="button", index=7, pressed=False))
 c._service_requests()                                   # process the deferred page change

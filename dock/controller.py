@@ -81,6 +81,7 @@ class DockController:
         self._last_key_index = 0              # last LCD key pressed (for the 'expand' folder anim)
         self._folder_src = 0                  # key the open folder grew from
         self._display_on = True               # dock screen on/off (long-press the middle button)
+        self._pending_display = None          # tray/gesture toggle -> applied on the loop thread (HID writes)
         self._press = {}                      # input_id -> held-press state (gesture detection)
         self._tap_pending = {}                # input_id -> a tap awaiting a possible double-tap
         self.connected = False
@@ -347,16 +348,23 @@ class DockController:
         self._fire_action(self._gesture_action(binding, slot), index, kind, animate=False)
 
     def toggle_display(self) -> None:
-        self.set_display(not self._display_on)
+        # HID writes are single-threaded — defer to the loop thread (the tray menu calls this on the
+        # Qt thread; the middle-button hold on the loop thread). Both just flag; the loop applies it.
+        self._pending_display = not self._display_on
 
     def set_display(self, on: bool) -> None:
+        self._pending_display = bool(on)
+
+    def _apply_display(self, on: bool) -> None:
         """Turn the dock screen on (wake + restore brightness + render) or off (cleared + HAN sleep,
-        backlight fully off). Input still flows while asleep, so the middle-button hold wakes it."""
+        backlight fully off). MUST run on the device-loop thread — it writes raw HID frames, which are
+        not thread-safe (a stray command frame between a BAT header and its chunks desyncs the stream)."""
         self._display_on = bool(on)
         if self.connected:
             try:
                 if self._display_on:
-                    self.dock.wake()                       # DIS: re-assert display power after HAN sleep
+                    self._last_input = time.time()         # manual wake resets the idle timer, else
+                    self.dock.wake()                       # _maybe_enter_ambient fires again at once
                     self.dock.set_brightness(self.config.brightness)
                     self._render_requested = True
                 else:
@@ -452,6 +460,10 @@ class DockController:
             b = self._pending_brightness
             self._pending_brightness = None
             self.dock.set_brightness(b)
+        if self._pending_display is not None:  # tray/gesture screen on/off -> apply HID writes here
+            on = self._pending_display
+            self._pending_display = None
+            self._apply_display(on)
         self._advance_timers()                 # timers tick (and alarm) even while ambient is up
         # While the ambient/idle screen is showing, hold it and defer page/switch work until a wake.
         if self._ambient is not None:
@@ -615,18 +627,19 @@ class DockController:
         # pass an already-sampled value tuple so we don't double-sample (e.g. net rate) per tick.
         if item.get("live"):
             src = (item.get("live") or {}).get("source", "")
-            if src == "media" and live_val is None:        # read title + cover under ONE lock
-                text, caption, frac, art = live.media_snapshot()
-                kind = "media"
+            if src == "media":                             # ALWAYS read title + cover under ONE lock
+                text, caption, frac, art = live.media_snapshot()   # (never pair a stale title with a
+                kind = "media"                             # freshly-fetched cover on a track change)
             else:
                 text, caption, frac, kind = live_val if live_val is not None else live.value(src)
-                art = live.media_artwork() if kind == "media" else None
+                art = None
             wx = live.weather_payload() if kind in ("weather", "wxmetric", "wxforecast") else None
             return live_face(item, text, caption, frac, kind, show_label=show,
                              style=self.config.data.get("live_style", "gauge"),
                              history=live.history(src), scroll=scroll, artwork=art, weather=wx)
         # A toggle key shows the look of its CURRENT state (so the dock reflects which way it's set).
-        action = item.get("action") or {}
+        action = item.get("action")
+        action = action if isinstance(action, dict) else {}   # tolerate a hand-edited non-dict action
         if action.get("type") == "toggle":
             states = self._toggle_states(action)
             if states:
@@ -915,16 +928,17 @@ class DockController:
             else:                                           # clock design (static or animated)
                 wd = time.strftime("%a", lt).upper()
                 day, mon = time.strftime("%d", lt), time.strftime("%b", lt).upper()
+                solar = live.solar_times() if style == "solar" else None
                 if animated:
                     amb["last_anim"] = now
                     amb["sig"] = None
                 else:
-                    sig = (hh, mm, wd, day, mon, drift, style)
+                    sig = (hh, mm, wd, day, mon, drift, style, solar)
                     if amb.get("sig") == sig:
                         return
                     amb["sig"] = sig
                 tiles = ambient_clock_tiles(hh, mm, wd, day, mon, drift=drift,
-                                            style=style, phase=phase)
+                                            style=style, phase=phase, solar=solar)
             q, ss = (_ANIM_Q, _ANIM_SS) if animated else (92, 0)
             for i, tile in enumerate(tiles):
                 self.dock.set_key_pil(i, tile, quality=q, subsampling=ss)

@@ -36,7 +36,8 @@ from .iconart import icon_image
 from .actionart import action_art
 from . import live as livesrc
 from .images import (render_face, folder_face, live_face, panel_frames, slice_fullscreen,
-                     effective_fit, emoji_image, DEFAULT_BG, PRESS_ANIM_ORDER, PRESS_ANIM_LABELS,
+                     effective_fit, emoji_image, has_swatch, DEFAULT_BG,
+                     PRESS_ANIM_ORDER, PRESS_ANIM_LABELS,
                      FOLDER_ANIM_ORDER, FOLDER_ANIM_LABELS, LIVE_STYLE_ORDER, LIVE_STYLE_LABELS)
 from .emoji_data import CATEGORIES
 from .ui_toast import Toast
@@ -651,6 +652,7 @@ class KeyTile(_HoverFX, QLabel):
         self._base_pix = None
         self._face_key = None                 # (id(face), scale, dpr) of last applied face -> skip redundant rebuilds
         self._press_pos = None
+        self._drag_over = False               # a drag is hovering this key -> armed-target ring in paintEvent
         self._init_fx()
 
     def enterEvent(self, ev):
@@ -664,13 +666,21 @@ class KeyTile(_HoverFX, QLabel):
     def paintEvent(self, ev):
         super().paintEvent(ev)                # QSS background/border + the face pixmap
         t, pulse = self._hover_t, self._pulse
-        if t <= 0.01 and pulse <= 0.01:
+        if t <= 0.01 and pulse <= 0.01 and not self._drag_over:
             return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setBrush(Qt.NoBrush)
         rad = max(4.0, float(T.R_LG) - 1.0)   # hug the tile's QSS corner rounding
         r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        if self._drag_over:                   # a drag is armed on this key: a soft glow + a crisp ring
+            for w, a in ((7.0, 46), (2.6, 240)):
+                c = QColor(T.ACCENT)
+                c.setAlpha(a)
+                pen = QPen(c)
+                pen.setWidthF(w)
+                p.setPen(pen)
+                p.drawRoundedRect(r, rad, rad)
         if t > 0.01:                          # hover: an accent glow ring that eases in
             c = QColor(T.ACCENT)
             c.setAlpha(int(95 * t))
@@ -759,9 +769,19 @@ class KeyTile(_HoverFX, QLabel):
             return                            # the folder Back key rejects every drag (incl. key-swap)
         if md.hasFormat(self.MIME) or md.hasFormat(ACTION_MIME) or md.hasUrls() or md.hasText():
             ev.acceptProposedAction()         # a key-swap, a sidebar action, or a file/app/URL
+            self._drag_over = True            # arm the target ring so the user sees where it will land
+            self.update()
+
+    def dragLeaveEvent(self, ev):
+        if self._drag_over:
+            self._drag_over = False
+            self.update()
 
     def dropEvent(self, ev):
         md = ev.mimeData()
+        if self._drag_over:
+            self._drag_over = False
+            self.update()
         if self.win is None:
             return
         if md.hasFormat(ACTION_MIME) and not self._is_fixed_back():
@@ -809,6 +829,7 @@ class CircleControl(_HoverFX, QWidget):
         self.win = None                       # set by ConfigWindow
         self.sid = None                       # slot id (e.g. "btn7") for copy/paste
         self.setAcceptDrops(True)             # accept an action dragged from the sidebar
+        self._drag_over = False               # a drag is hovering this control -> armed ring in paintEvent
 
     def rescale(self, s: float):
         self._d = max(10, round(self._base_d * s))
@@ -819,9 +840,19 @@ class CircleControl(_HoverFX, QWidget):
         md = ev.mimeData()
         if self.sid and (md.hasFormat(ACTION_MIME) or md.hasUrls() or md.hasText()):
             ev.acceptProposedAction()
+            self._drag_over = True
+            self.update()
+
+    def dragLeaveEvent(self, ev):
+        if self._drag_over:
+            self._drag_over = False
+            self.update()
 
     def dropEvent(self, ev):
         md = ev.mimeData()
+        if self._drag_over:
+            self._drag_over = False
+            self.update()
         if self.win is None or not self.sid:
             return
         if md.hasFormat(ACTION_MIME):
@@ -888,6 +919,16 @@ class CircleControl(_HoverFX, QWidget):
         cx, cy = self._d / 2.0, self._d / 2.0
         r = self._d / 2.0 - 4
         focused = self.hasFocus()
+
+        if self._drag_over:                   # a drag is armed on this control: soft glow + crisp ring
+            for w, a in ((6.0, 46), (2.4, 240)):
+                c = QColor(T.ACCENT)
+                c.setAlpha(a)
+                pen = QPen(c)
+                pen.setWidthF(w)
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(QPointF(cx, cy), r + 2, r + 2)
 
         # soft accent halo so the actively-edited control "lights up" in the brand colour
         if self._selected:
@@ -2656,12 +2697,7 @@ class ConfigWindow(QMainWindow):
         self._mirror_timer.timeout.connect(self._tick_live_mirror)
         self._save_bridge = _SaveBridge()
         self._save_bridge.saved.connect(self._on_config_saved)     # queued -> GUI thread
-        _real_save = self.cfg.save
-        def _wrapped_save(*a, **k):
-            _real_save(*a, **k)
-            if not self._restoring:
-                self._save_bridge.saved.emit()
-        self.cfg.save = _wrapped_save
+        self._install_save_hook()
 
         self._build_ui()
         self.refresh()
@@ -3633,18 +3669,32 @@ class ConfigWindow(QMainWindow):
             else:
                 box.addWidget(QLabel("No matching actions.", objectName="dim"))
         else:                                  # browse -> Favourites / Recent / Common + categories
+            first = [True]
+            def _sep():                        # section rhythm: headers breathe + a faint divider
+                if first[0]:
+                    first[0] = False
+                    return
+                box.addSpacing(12)
+                div = QFrame(objectName="hsep")
+                div.setFixedHeight(1)
+                box.addWidget(div)
+                box.addSpacing(8)
             favs = [t for t in self.cfg.data.get("fav_actions", []) if t in ACTION_EMOJI]
             if favs:
+                _sep()
                 box.addWidget(QLabel("★  FAVOURITES", objectName="cardtitle"))
                 self._add_actions(box, favs)
             recent = [t for t in self.cfg.data.get("recent_actions", [])
                       if t in ACTION_EMOJI and t not in favs][:6]
             if recent:
+                _sep()
                 box.addWidget(QLabel("RECENT", objectName="cardtitle"))
                 self._add_actions(box, recent)
+            _sep()
             box.addWidget(QLabel("COMMON", objectName="cardtitle"))
             self._add_actions(box, [t for t in COMMON_ACTIONS if t != "none"])
             for cat, types in ACTION_CATEGORIES:
+                _sep()
                 hdr = _CatHeader(cat)
                 hdr.set_expanded(cat in self._act_expanded)
                 hdr.clicked.connect(lambda _=False, c=cat: self._toggle_act_cat(c))
@@ -4275,6 +4325,7 @@ class ConfigWindow(QMainWindow):
     # ---- refresh -----------------------------------------------------------
     def refresh(self):
         self.cfg = self.controller.config
+        self._install_save_hook()              # a rebound cfg (restore/import/reload) needs re-wrapping
         self.view_folder = None
         self.view_folder_page = 0
         self.profile_combo.blockSignals(True)
@@ -4329,6 +4380,22 @@ class ConfigWindow(QMainWindow):
         self._refresh_tabs()
         self._refresh_all_slots()
         self._refresh_conn()
+
+    def _install_save_hook(self):
+        """Wrap cfg.save so every save re-arms the history timer. Idempotent, and re-applied whenever
+        self.cfg is rebound — a Backups restore / import / tray reload swaps in a FRESH Config whose
+        save is unwrapped, which would otherwise silently stop undo/redo from recording."""
+        cfg = self.cfg
+        if getattr(cfg.save, "_hexpad_wrapped", False):
+            return
+        _real_save = cfg.save
+
+        def _wrapped_save(*a, **k):
+            _real_save(*a, **k)
+            if not self._restoring:
+                self._save_bridge.saved.emit()
+        _wrapped_save._hexpad_wrapped = True
+        cfg.save = _wrapped_save
 
     # ---- undo / redo -------------------------------------------------------
     def _on_config_saved(self):
@@ -4500,7 +4567,8 @@ class ConfigWindow(QMainWindow):
         connected = st["connected"]
         dot = "●" if connected else "○"
         self.conn_lbl.setText(f"{dot} {'Connected' if connected else 'No device'}")
-        self.conn_lbl.setStyleSheet(f"color: {T.ACCENT if connected else T.DANGER};")
+        # 'No device' is a calm idle state, not an alarm — reserve DANGER red for destructive actions.
+        self.conn_lbl.setStyleSheet(f"color: {T.ACCENT if connected else T.TEXT_DIM};")
         if getattr(self, "_nodev_banner", None) is not None:
             self._nodev_banner.setVisible(not connected)
 
@@ -4922,6 +4990,7 @@ class ConfigWindow(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(22)
         live_on = bool((item.get("live") or {}).get("source"))
+        self._insp_item = item                        # the binding this inspector edits (for previews)
         dpr = _dpr(g)
 
         def _bicon(btn, name):
@@ -4982,6 +5051,33 @@ class ConfigWindow(QMainWindow):
         fill.setChecked(effective_fit(item) == "cover")
         fill.toggled.connect(lambda on: self._set_flag(item, "fit", "cover" if on else "contain"))
         c2.addWidget(fill)
+        # Colour-/effect-action key (Prisma/Tapo) with no custom icon: it shows a rounded swatch
+        # (solid colour or a gradient for effects like Rainbow) — offer a size slider for it.
+        if has_swatch(item) and images.AUTO_ICONS and not (item.get("icon") or "").strip() and not live_on:
+            srow = QHBoxLayout(); srow.setSpacing(6)
+            srow.addWidget(QLabel("Swatch size", objectName="dim"))
+            ss = QSlider(Qt.Horizontal); ss.setRange(40, 100)
+            try:
+                ss.setValue(int(float(item.get("swatch_size") or 70)))
+            except (TypeError, ValueError):
+                ss.setValue(70)
+            sslab = QLabel(f"{ss.value()}%", objectName="sliderval")
+            sslab.setAlignment(Qt.AlignRight | Qt.AlignVCenter); sslab.setMinimumWidth(42)
+
+            def _set_swatch_size(x, it=item, lb=sslab):
+                it["swatch_size"] = x
+                lb.setText(f"{x}%")
+                if getattr(self, "face_preview", None) is not None:   # keep the big preview in sync too
+                    try:
+                        self.face_preview.setPixmap(
+                            face_pixmap(self._face(it), self._PREVIEW, self.face_preview))
+                    except RuntimeError:
+                        pass
+                self._refresh_key_preview(self.sel)
+                self._render_timer.start()
+            ss.valueChanged.connect(_set_swatch_size)
+            srow.addWidget(ss, 1); srow.addWidget(sslab)
+            c2.addLayout(srow)
         style_btn = QPushButton("Customize…")
         style_btn.setToolTip("Zoom · move · rotate · opacity · rounded corners · app tile · "
                              "border · shadow · background gradient")
@@ -6035,7 +6131,7 @@ class ConfigWindow(QMainWindow):
 
             def _sl_mode(_i=None):
                 self._set_action(a, "mode", mc.currentData())
-                QTimer.singleShot(0, lambda: self._build_action_fields(item))   # show colour fields
+                QTimer.singleShot(0, self._populate_editor)     # rebuild fields + swatch-size slider
             mc.currentIndexChanged.connect(_sl_mode)
             form.addRow("Action", mc)
             form.addRow("Bulb IP", line("host", "192.168.0.87"))
@@ -6083,7 +6179,7 @@ class ConfigWindow(QMainWindow):
 
             def _rgb_mode(_i=None):
                 self._set_action(a, "mode", mc.currentData())
-                QTimer.singleShot(0, lambda: self._build_action_fields(item))   # show that mode's fields
+                QTimer.singleShot(0, self._populate_editor)     # rebuild fields + swatch-size slider
             mc.currentIndexChanged.connect(_rgb_mode)
             form.addRow("Scene", mc)
             m = a.get("mode", "color")
@@ -6512,6 +6608,15 @@ class ConfigWindow(QMainWindow):
 
     def _set_action(self, a, key, value):
         a[key] = value
+        # The rendered face can now depend on action fields (rgbscene/smartlight colour + effect ->
+        # a swatch), so refresh the big inspector preview too — like _set_face/_set_flag do.
+        item = getattr(self, "_insp_item", None)
+        if item is not None and getattr(self, "face_preview", None) is not None:
+            try:
+                self.face_preview.setPixmap(
+                    face_pixmap(self._face(item), self._PREVIEW, self.face_preview))
+            except RuntimeError:
+                pass
         self._refresh_key_preview(self.sel)
         self._render_timer.start()
 

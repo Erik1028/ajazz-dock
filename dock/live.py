@@ -1518,6 +1518,26 @@ def weather_payload() -> Optional[dict]:
     }
 
 
+def solar_times() -> Optional[Tuple[int, int, bool]]:
+    """(sunrise_minutes, sunset_minutes, is_day) for the resolved location, or None if not known yet.
+    Reads the cached weather state (and starts the sampler, so the Solar-sky idle screen gets real
+    sun times). Minutes are since local midnight; sunrise/sunset come from Open-Meteo daily data."""
+    st = _wx()
+    if not st:
+        return None
+
+    def _min(s):
+        try:
+            hh, mm = str(s).split(":")
+            return int(hh) * 60 + int(mm)
+        except (ValueError, AttributeError, TypeError):
+            return None
+    sr, ss = _min(st.get("sunrise")), _min(st.get("sunset"))
+    if sr is None or ss is None or ss <= sr:
+        return None
+    return (sr, ss, bool(st.get("is_day", 1)))
+
+
 def weather_place_label() -> str:
     """The resolved location's display name (city or 'lat,lon'), or '' if not resolved yet."""
     st = _wx()

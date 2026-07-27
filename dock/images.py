@@ -73,6 +73,17 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_w: int):
     return lines[:2]
 
 
+def _elide(draw: ImageDraw.ImageDraw, text: str, font, max_w: int) -> str:
+    """Trim `text` with a trailing ellipsis so the WHOLE label fits one line (the label band shows a
+    single line, so wrapping would silently drop the leading words)."""
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    s = text
+    while s and draw.textlength(s + "…", font=font) > max_w:
+        s = s[:-1]
+    return (s + "…") if s else text
+
+
 @lru_cache(maxsize=4096)
 def emoji_image(glyph: str, target: int = 44) -> Optional[Image.Image]:
     """A single color emoji cropped to its ink box and scaled so its long side ≈ target px
@@ -181,12 +192,89 @@ def _draw_fluent(img: Image.Image, name: str, cx: int, cy: int, target: int,
 
 def resolve_auto_icon(item: Dict[str, Any]) -> str:
     """A 'fluent:<name>' icon derived from the key's action type, or '' if none fits."""
-    t = ((item.get("action") or {}).get("type") or "").lower()
+    a = item.get("action")
+    a = a if isinstance(a, dict) else {}           # tolerate a hand-edited non-dict action
+    t = (a.get("type") or "").lower()
     if t == "open":                                # launch: url -> globe, else app
-        tgt = str((item.get("action") or {}).get("target") or "").lower()
+        tgt = str(a.get("target") or "").lower()
         return "fluent:globe" if tgt.startswith(("http://", "https://", "www.")) else "fluent:app"
     name = _ACTION_FLUENT.get(t)
     return f"fluent:{name}" if name else ""
+
+
+# rgbscene effect name (lower) -> a representative gradient swatch kind. Hue-cycling effects get a
+# rainbow sweep; Fire gets a warm sweep. Effects not listed keep the normal auto-icon.
+_EFFECT_GRAD = {"rainbow": "rainbow", "colorcycle": "rainbow", "spectrum": "rainbow",
+                "gradient": "rainbow", "fire": "fire"}
+
+
+def resolve_swatch(item: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """The swatch a colour-/effect-setting action should show, as (kind, value), or None:
+      ('solid', '<hex>')       — rgbscene / smartlight in colour mode
+      ('grad',  'rainbow'|'fire') — an rgbscene effect with a representative gradient
+    Drawn as a rounded FOREGROUND square over whatever background (a leftover bg never hides it).
+    rgbscene defaults to colour mode; smartlight must be explicit (its default is toggle)."""
+    a = item.get("action")
+    a = a if isinstance(a, dict) else {}           # tolerate a hand-edited non-dict action
+    t = (a.get("type") or "").lower()
+    mode = (a.get("mode") or "").lower()
+    if (t == "rgbscene" and mode in ("", "color")) or (t == "smartlight" and mode == "color"):
+        c = (a.get("color") or "").strip()
+        return ("solid", c) if c else None
+    if t == "rgbscene" and mode == "effect":
+        g = _EFFECT_GRAD.get((a.get("effect") or "").strip().lower())
+        return ("grad", g) if g else None
+    return None
+
+
+def has_swatch(item: Dict[str, Any]) -> bool:
+    """True if this key renders a colour/gradient swatch (so the editor offers a size slider)."""
+    return resolve_swatch(item) is not None
+
+
+def _grad_swatch_tile(size: Tuple[int, int], kind: str) -> Image.Image:
+    """A horizontal gradient tile: 'rainbow' sweeps the full hue wheel; 'fire' sweeps red->gold."""
+    w, h = max(1, size[0]), max(1, size[1])
+    row = Image.new("RGB", (w, 1))
+    px = row.load()
+    if kind == "fire":
+        stops = ((255, 58, 0), (255, 138, 0), (255, 210, 74))
+        for x in range(w):
+            f = x / max(1, w - 1) * (len(stops) - 1)
+            i = min(len(stops) - 2, int(f)); g = f - i
+            a0, b0 = stops[i], stops[i + 1]
+            px[x, 0] = tuple(int(a0[k] + (b0[k] - a0[k]) * g) for k in range(3))
+    else:                                            # rainbow: hue 0..1 across the width
+        for x in range(w):
+            r, g, b = colorsys.hsv_to_rgb(x / w, 0.85, 1.0)
+            px[x, 0] = (int(r * 255), int(g * 255), int(b * 255))
+    return row.resize((w, h))
+
+
+def _draw_swatch(img: Image.Image, swatch: Tuple[str, str], item: Dict[str, Any],
+                 size: Tuple[int, int], has_label: bool) -> None:
+    """Draw a centred rounded-square swatch (solid colour or gradient) on `img`. Its side is
+    item['swatch_size'] percent of the tile (40..100, default 70); corners are rounded."""
+    kind, val = swatch
+    w, h = size
+    band = 18 if has_label else 0
+    avail = min(w, h - band)
+    try:
+        pct = int(float(item.get("swatch_size", 70)))
+    except (TypeError, ValueError):
+        pct = 70
+    frac = max(40, min(100, pct)) / 100.0
+    sq = max(4, min(avail, int(round(avail * frac))))    # never exceed the tile/cell
+    cx, cy = w // 2, (h - band) // 2
+    x0, y0 = cx - sq // 2, cy - sq // 2
+    rad = max(2, int(sq * 0.24))
+    # Solid + gradient share one path: paste through an anti-aliased rounded mask (smooth corners),
+    # then a fixed LIGHT rim so even a near-black colour stays separated from the black tile/bezel.
+    tile = (_grad_swatch_tile((sq, sq), val) if kind == "grad"
+            else Image.new("RGB", (sq, sq), parse_color(val, DEFAULT_BG)))
+    img.paste(tile, (x0, y0), _rounded_mask((sq, sq), rad))
+    ImageDraw.Draw(img).rounded_rectangle([x0, y0, x0 + sq - 1, y0 + sq - 1], radius=rad,
+                                          outline=(78, 82, 90), width=max(1, sq // 34))
 
 
 def effective_fit(item: Dict[str, Any]) -> str:
@@ -403,7 +491,11 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
     label = (item.get("label") or "").strip() if show_label else ""
     has_icon = bool(icon)
     has_label = bool(label)
-    if not has_icon and AUTO_ICONS:                  # cohesive default icon derived from the action
+    # A colour-/effect-setting action (rgbscene, or smartlight colour) with no custom icon shows a
+    # rounded SWATCH — a solid colour for a colour scene, or a representative gradient for an effect
+    # (Rainbow etc.). Drawn over the background, so a leftover bg never hides it. Replaces the icon.
+    swatch = resolve_swatch(item) if (not has_icon and AUTO_ICONS) else None
+    if not has_icon and AUTO_ICONS and not swatch:   # cohesive default icon derived from the action
         icon = resolve_auto_icon(item)
         has_icon = bool(icon)
 
@@ -416,8 +508,16 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(img)
         font = _font(12)
-        lines = _wrap(draw, label, font, w - 4)
-        draw.text((w // 2, h - 9), lines[-1] if lines else label, font=font, fill=fg, anchor="mm")
+        # The scrim band is always dark: white auto-contrast reads on it (the key's own light-bg dark
+        # fg would be dark-on-dark). Respect an explicit text_color. Elide so no leading word is lost.
+        band_fg = fg if item.get("text_color") else parse_color(DEFAULT_FG)
+        draw.text((w // 2, h - 9), _elide(draw, label, font, w - 4), font=font, fill=band_fg, anchor="mm")
+
+    if swatch:                                       # colour-/effect-action key -> a rounded swatch
+        _draw_swatch(img, swatch, item, size, has_label)
+        if has_label:
+            _label_overlay()
+        return img
 
     # A crisp Segoe Fluent icon ("fluent:<name>"), tinted with the key's text colour.
     if has_icon and icon.startswith("fluent:"):
@@ -593,7 +693,12 @@ def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
     content.alpha_composite(panel, (tx0, ty0))
 
     picks = [contents.get(k) for k in _FOLDER_PREVIEW_KEYS]
-    picks = [it for it in picks if it and (it.get("icon") or it.get("label") or it.get("live"))][:6]
+    # An item is previewable if it has ANY visible face: an icon, a label, live data, or — only when
+    # auto-icons are on (which is what actually draws them) — a colour/gradient swatch or an
+    # action-derived Fluent auto-icon. Mirrors exactly what _render_face_impl paints for the mini.
+    picks = [it for it in picks
+             if it and (it.get("icon") or it.get("label") or it.get("live")
+                        or (AUTO_ICONS and (has_swatch(it) or resolve_auto_icon(it))))][:6]
     if picks:
         n = len(picks)
         cols = 2 if n <= 4 else 3
@@ -632,8 +737,8 @@ def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         d = ImageDraw.Draw(img)
         font = _font(12)
-        lines = _wrap(d, label, font, w - 4)
-        d.text((w // 2, h - 9), lines[-1] if lines else label, font=font, fill=fg, anchor="mm")
+        band_fg = fg if item.get("text_color") else parse_color(DEFAULT_FG)   # white on the dark scrim
+        d.text((w // 2, h - 9), _elide(d, label, font, w - 4), font=font, fill=band_fg, anchor="mm")
 
     return img
 
@@ -1883,7 +1988,7 @@ def _ambient_tile(text, color, frac, drift=(0, 0)):
 # ---- ambient / idle-screen designs -----------------------------------------------------------
 AMBIENT_STYLE_ORDER = ["classic", "rainbow", "aurora", "ocean", "ember", "matrix", "snow",
                        "synthwave", "starfield", "plasma", "lava", "flip", "nixie",
-                       "night", "minimal"]
+                       "night", "solar", "minimal"]
 AMBIENT_STYLE_LABELS = {
     "classic": "Classic — mint grid",
     "rainbow": "Rainbow wave  (animated)",
@@ -1899,12 +2004,13 @@ AMBIENT_STYLE_LABELS = {
     "flip": "Flip clock — split-flap",
     "nixie": "Nixie tubes — retro",
     "night": "Night sky",
+    "solar": "Solar sky — tracks the real sun",
     "minimal": "Minimal — barely there",
 }
 AMBIENT_ANIMATED = {"rainbow", "aurora", "ocean", "ember", "matrix", "snow", "synthwave",
                     "starfield", "plasma", "lava"}   # re-rendered continuously (~15 fps)
 _AMBIENT_GAP = 22                       # bezel approximation for canvas-spanning designs
-_AMBIENT_PREVIEW_VER = 6                # bump when any design changes -> preview cache refreshes
+_AMBIENT_PREVIEW_VER = 9                # bump when any design changes -> preview cache refreshes
 
 
 def _ambient_canvas(scale: int = 1):
@@ -2349,10 +2455,12 @@ def ambient_now_playing_tiles(title, artist, art, phase, playing=True, pos=None)
         base = int(W * 0.02) - int((phase * H * 0.11) % span)   # a little slower -> easier to read
         for off in (base, base + span):
             d.text((off, ty), title, font=tf, anchor="lm", fill=(247, 249, 252))
-    if pos is not None:                                  # a thin neon progress bar at the very bottom
+    if pos is not None:                                  # a thin neon progress bar near the bottom
         pf = max(0.0, min(1.0, float(pos)))
         bh = max(3, int(H * 0.014))
-        y0 = H - bh
+        margin = max(bh, int(H * 0.06))                  # OFF the absolute edge: the device EDGE_INSET
+        y1 = H - margin                                  # + CONTENT_SHIFT(dy) eat the last rows
+        y0 = y1 - bh
         track = Image.new("RGBA", (W, bh), (255, 255, 255, 38))  # dim full-width track
         canvas = canvas.convert("RGBA")
         canvas.alpha_composite(track, (0, y0))
@@ -2360,8 +2468,8 @@ def ambient_now_playing_tiles(title, artist, art, phase, playing=True, pos=None)
         d = ImageDraw.Draw(canvas)
         fillw = int(W * pf)
         if fillw > 0:
-            d.rectangle([0, y0, fillw, H], fill=(255, 92, 170))  # neon-pink played portion
-            d.rectangle([max(0, fillw - 2), y0, fillw, H], fill=(255, 205, 236))   # bright head
+            d.rectangle([0, y0, fillw, y1], fill=(255, 92, 170))  # neon-pink played portion
+            d.rectangle([max(0, fillw - 2), y0, fillw, y1], fill=(255, 205, 236))   # bright head
     return [t.resize((kw, kh), Image.LANCZOS) for t in _slice_ambient(canvas, S)]
 
 
@@ -2434,64 +2542,119 @@ def _ambient_nixie(hh, mm, weekday, day, month, drift):
     ]
 
 
+@lru_cache(maxsize=2)
+def _synthwave_sky(W, H, horizon):
+    """Static retrowave backdrop — indigo->hot-magenta gradient, a jagged mountain ridge silhouette
+    and a glowing horizon band. Cached, so per frame only the stars, pulsing sun and rolling grid
+    are recomputed (keeps this animated design low-CPU)."""
+    import random
+    sky = Image.new("RGB", (W, H), (10, 4, 22))
+    sky.paste(_vgrad(W, horizon, (20, 6, 50), (206, 28, 122)), (0, 0))
+    rnd = random.Random(23)                              # a distant ridge for depth (deterministic)
+    lo = int(horizon * 0.82)
+    pts, x = [(0, horizon)], 0
+    while x < W:
+        x += rnd.randint(int(W * 0.05), int(W * 0.11))
+        pts.append((min(x, W), horizon - rnd.randint(0, horizon - lo)))
+    pts.append((W, horizon))
+    ImageDraw.Draw(sky).polygon(pts, fill=(15, 7, 28))
+    glow = Image.new("RGB", (W, H), (0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rectangle([0, horizon - 2, W, horizon + 3], fill=(255, 120, 205))   # glowing horizon band
+    gd.line(pts, fill=(255, 70, 195), width=3)                             # neon rim on the ridge
+    sky = ImageChops.add(sky, glow.filter(ImageFilter.GaussianBlur(7)))
+    ImageDraw.Draw(sky).line(pts, fill=(255, 158, 224), width=1)           # crisp bright ridge edge
+    return sky
+
+
 def _ambient_synthwave(hh, mm, weekday, day, month, drift, phase=0.0):
-    """Retrowave: gradient sky, a slatted sun on the horizon, and a NEON perspective grid that
-    rolls endlessly toward the viewer (the signature synthwave motion) — horizontals accelerate
-    as they near the bottom (perspective), loop seamlessly, and bloom via a blurred glow pass."""
+    """Retrowave: a gradient sky with a distant ridge, a glowing pulsing sun with drifting venetian
+    slats, and a FAST dual-neon perspective grid (magenta near -> cyan far) rushing toward you with a
+    warm sun reflection and a bloom pass."""
     import random
     w, h = _ambient_canvas()
     S = 2
     W, H = w * S, h * S
     kw, kh = KEY_SIZE
     horizon = int(H * 0.56)
-    canvas = Image.new("RGB", (W, H), (14, 5, 26))
-    canvas.paste(_vgrad(W, horizon, (20, 6, 42), (150, 26, 96)), (0, 0))
+    cx = W // 2
+    canvas = _synthwave_sky(W, H, horizon).copy()
     d = ImageDraw.Draw(canvas)
     rnd = random.Random(9)
-    for j in range(74):                               # sparse stars, gently twinkling
-        x, y = rnd.randrange(W), rnd.randrange(int(horizon * 0.74))
-        base = rnd.randint(80, 180)
-        tw = 0.55 + 0.45 * math.sin(phase * 2.0 + j * 1.7)
-        b = int(base * (0.5 + 0.5 * tw))
-        d.point((x, y), fill=(b, int(b * 0.85), b))
-    # the sun: warm vertical gradient disc with slat gaps, sitting on the horizon
-    R = int(H * 0.30)
-    cx = W // 2
+    for j in range(96):                               # more stars, quicker twinkle
+        x, y = rnd.randrange(W), rnd.randrange(int(horizon * 0.72))
+        base = rnd.randint(90, 205)
+        b = int(base * (0.42 + 0.58 * (0.5 + 0.5 * math.sin(phase * 3.0 + j * 1.7))))
+        d.point((x, y), fill=(b, int(b * 0.8), min(255, b + 15)))
+    # an occasional shooting star streaking across the upper sky (deterministic per cycle)
+    period, dur = 7.3, 0.8
+    sp = phase % period
+    if sp < dur:
+        k = int(phase / period)
+        t = sp / dur
+        hx = int((_mx(k) % W) + t * W * 0.55)
+        hy = int((_mx(k + 99) % max(1, int(horizon * 0.45))) + t * horizon * 0.18)
+        ln = int(W * 0.14)
+        d.line([(hx - ln, hy - int(ln * 0.34)), (hx, hy)], fill=(255, 232, 246), width=2)
+    # a soft warm bloom behind the sun (cheap: draw + blur at 1/4 scale, then upscale)
+    pulse = 1.0 + 0.035 * math.sin(phase * 1.7)
+    R = max(8, int(H * 0.30 * pulse))
+    sc = 4
+    bw, bh = W // sc, H // sc
+    bloom = Image.new("RGB", (bw, bh), (0, 0, 0))
+    br = R // sc
+    ImageDraw.Draw(bloom).ellipse([cx // sc - int(br * 1.6), horizon // sc - int(br * 1.6),
+                                   cx // sc + int(br * 1.6), horizon // sc + int(br * 0.7)],
+                                  fill=(150, 24, 92))
+    canvas = ImageChops.add(canvas, bloom.filter(ImageFilter.GaussianBlur(5)).resize((W, H), Image.BILINEAR))
+    # the sun disc: warm gradient, drifting venetian slats
     mask = Image.new("L", (2 * R, 2 * R), 0)
     ImageDraw.Draw(mask).ellipse([0, 0, 2 * R - 1, 2 * R - 1], fill=255)
     md = ImageDraw.Draw(mask)
-    for i, yf in enumerate((0.58, 0.70, 0.81, 0.91)):  # widening slats toward the bottom
+    slat_drift = (phase * 0.06) % 0.11
+    for i in range(5):                                # widening slats, slowly drifting upward
+        yf = 0.52 + i * 0.11 - slat_drift
+        if yf <= 0.30:
+            continue
         y0 = int(2 * R * yf)
         md.rectangle([0, y0, 2 * R, y0 + 3 + i * 2], fill=0)
-    sun = _vgrad(2 * R, 2 * R, (255, 214, 84), (255, 62, 132))
+    sun = _vgrad(2 * R, 2 * R, (255, 236, 130), (255, 44, 140))
     canvas.paste(sun, (cx - R, horizon - R), mask)
-    # the neon floor grid, drawn on its own layer so a blur pass gives it a real glow
+    # the neon floor grid on its own layer so a blur pass gives it a real glow
     floor_h = H - horizon
-    floor = Image.new("RGB", (W, floor_h), (16, 6, 30))
+    floor = Image.new("RGB", (W, floor_h), (12, 5, 26))
+    col_w = max(2, int(W * 0.12))                     # warm sun reflection down the centre (behind grid)
+    floor.paste(_vgrad(col_w, floor_h, (86, 20, 56), (12, 5, 26)), (cx - col_w // 2, 0))
     fd = ImageDraw.Draw(floor)
-    grid = (255, 64, 186)
-    for k in range(-14, 15):                          # verticals converge on the vanishing point
-        fd.line([(cx + k * int(W * 0.008), 0), (cx + k * int(W * 0.098), floor_h)],
-                fill=grid, width=1)
-    N = 14                                            # more rungs -> a denser, more detailed floor
-    scroll = (phase * 0.55) % 1.0                     # <1 loop / ~1.8 s — a quicker rush toward you
+    for k in range(-15, 16):                           # verticals converge on the vanishing point
+        fd.line([(cx + k * int(W * 0.007), 0), (cx + k * int(W * 0.102), floor_h)], fill=(150, 70, 235), width=1)
+    N = 15
+    scroll = (phase * 0.85) % 1.0                      # faster rush toward you (~1.2 s / loop)
+    near_c, far_c = (255, 58, 190), (86, 214, 255)     # magenta near -> cyan far (depth)
     for i in range(N + 2):
-        dd = (i + scroll) / N                         # depth 0 (horizon) → 1 (underfoot), rolling
+        dd = (i + scroll) / N                          # depth 0 (far) -> 1 (underfoot), rolling
         if dd <= 0.02:
             continue
-        gy = floor_h * (dd ** 2.4)                    # perspective: far lines crowd the horizon
+        gy = floor_h * (dd ** 2.4)                     # perspective: far lines crowd the horizon
         if gy < 1 or gy > floor_h:
             continue
-        fade = max(0.26, min(1.0, dd * 1.30))         # near lines bright, far ones dim
-        col = (int(grid[0] * fade), int(grid[1] * fade), int(grid[2] * fade))
-        fd.line([(0, int(gy)), (W, int(gy))], fill=col, width=1 if dd < 0.42 else 2)
-    floor = ImageChops.add(floor, floor.filter(ImageFilter.GaussianBlur(2)))   # neon bloom
+        fade = max(0.28, min(1.0, dd * 1.35))
+        col = tuple(int((far_c[j] + (near_c[j] - far_c[j]) * dd) * fade) for j in range(3))
+        fd.line([(0, int(gy)), (W, int(gy))], fill=col, width=1 if dd < 0.4 else 3)
+    for i in range(6):                                 # the sun's warm reflection mirrored on the grid
+        ry = int(floor_h * (0.015 + i * 0.05))
+        rw = int(R * (0.92 - i * 0.14))
+        if rw < 3:
+            break
+        c = max(24, 150 - i * 22)
+        fd.line([(cx - rw, ry), (cx + rw, ry)],
+                fill=(min(255, c + 80), int(c * 0.4), int(c * 0.55)), width=2 if i < 3 else 1)
+    floor = ImageChops.add(floor, floor.filter(ImageFilter.GaussianBlur(3)))   # neon bloom
     canvas.paste(floor, (0, horizon))
-    d = ImageDraw.Draw(canvas)
-    d.line([(0, horizon), (W, horizon)], fill=(255, 150, 220), width=2)   # bright horizon line
+    ImageDraw.Draw(canvas).line([(0, horizon), (W, horizon)], fill=(255, 170, 230), width=2)
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
-                       fill=(255, 244, 250), sub_fill=(228, 176, 220), halo=True)
+                       fill=(255, 244, 250), sub_fill=(232, 180, 224), halo=True)
     return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
 
 
@@ -2680,8 +2843,97 @@ def _ambient_night(hh, mm, weekday, day, month, drift):
     return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
 
 
+def _solar_sky(now_min, sr, ss):
+    """(top_rgb, bottom_rgb) sky gradient for local minute `now_min`, given sunrise/sunset minutes.
+    Smoothly crosses pre-dawn -> sunrise -> day -> sunset -> dusk -> night through a twilight span."""
+    def L(a, b, t):
+        t = max(0.0, min(1.0, t))
+        return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    NT, NB = (9, 11, 30), (3, 4, 12)          # deep night
+    RT, RB = (78, 104, 158), (245, 158, 98)   # sunrise — warm horizon
+    DT, DB = (48, 118, 214), (140, 192, 236)  # day — blue
+    ST, SB = (70, 58, 120), (236, 120, 74)    # sunset — warm
+    UT, UB = (24, 24, 58), (64, 42, 74)       # dusk — purple
+    tw = 55                                    # twilight span (min) around each event
+    if sr - tw <= now_min < sr:
+        return L(NT, RT, (now_min - (sr - tw)) / tw), L(NB, RB, (now_min - (sr - tw)) / tw)
+    if sr <= now_min < sr + tw:
+        return L(RT, DT, (now_min - sr) / tw), L(RB, DB, (now_min - sr) / tw)
+    if sr + tw <= now_min < ss - tw:
+        return DT, DB
+    if ss - tw <= now_min < ss:
+        return L(DT, ST, (now_min - (ss - tw)) / tw), L(DB, SB, (now_min - (ss - tw)) / tw)
+    if ss <= now_min < ss + tw:
+        return L(ST, UT, (now_min - ss) / tw), L(SB, UB, (now_min - ss) / tw)
+    if ss + tw <= now_min < ss + 2 * tw:
+        return L(UT, NT, (now_min - (ss + tw)) / tw), L(UB, NB, (now_min - (ss + tw)) / tw)
+    return NT, NB
+
+
+def _ambient_solar(hh, mm, weekday, day, month, drift, solar):
+    """A sky that tracks the REAL solar day for the configured location: pre-dawn indigo, a warm
+    sunrise, blue midday, a golden sunset, dusk and a starry night — with a sun (day) or crescent
+    moon (night) disc riding the day arc. `solar` = (sunrise_min, sunset_min, is_day) or None."""
+    import random
+    w, h = _ambient_canvas()
+    S = 2
+    W, H = w * S, h * S
+    try:
+        now_min = int(hh) * 60 + int(mm)
+    except (TypeError, ValueError):
+        now_min = 12 * 60
+    if solar and solar[0] is not None and solar[1] is not None and solar[1] > solar[0]:
+        sr, ss = int(solar[0]), int(solar[1])
+    else:
+        sr, ss = 6 * 60 + 30, 19 * 60 + 30     # graceful default until real sun times arrive
+    is_day = sr <= now_min < ss
+    top, bot = _solar_sky(now_min, sr, ss)
+    canvas = _vgrad(W, H, top, bot).convert("RGB")
+    d = ImageDraw.Draw(canvas)
+    # stars fade in as the sky darkens (night + twilight), keyed off the top-of-sky brightness
+    sky_lum = 0.299 * top[0] + 0.587 * top[1] + 0.114 * top[2]
+    sb = max(0.0, min(1.0, (46 - sky_lum) / 40.0))
+    if sb > 0.08:
+        rnd = random.Random(11)                          # deterministic -> the sky never flickers
+        for _ in range(130):
+            x, y = rnd.randrange(W), rnd.randrange(int(H * 0.72))
+            b = int(min(255, rnd.randint(90, 220)) * sb)
+            if b <= 12:
+                continue
+            r = S if rnd.random() < 0.12 else 1
+            d.ellipse([x - r, y - r, x + r, y + r], fill=(b, b, min(255, b + 20)))
+    # sun / moon riding an arc across the panel (frac 0..1 = rise -> set)
+    if is_day:
+        frac = (now_min - sr) / max(1, ss - sr)
+        near = 1.0 - abs(frac - 0.5) * 2.0               # 0 at horizon, 1 at midday
+        lo, hi = (255, 172, 88), (255, 240, 186)
+        body = tuple(int(lo[i] + (hi[i] - lo[i]) * max(0.0, near)) for i in range(3))
+        glow = (255, 208, 148)
+    else:
+        frac = ((now_min - ss) % 1440) / max(1, sr + 1440 - ss)
+        body, glow = (226, 231, 246), (150, 168, 210)
+    margin = int(W * 0.14)
+    bx = int(margin + max(0.0, min(1.0, frac)) * (W - 2 * margin))
+    by = int(H * 0.80 - math.sin(max(0.0, min(1.0, frac)) * math.pi) * H * 0.6)
+    br = max(6, int(min(w, h) * 0.18 * S))
+    disc = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    ImageDraw.Draw(disc).ellipse([bx - br * 2, by - br * 2, bx + br * 2, by + br * 2], fill=glow + (75,))
+    disc = disc.filter(ImageFilter.GaussianBlur(br))
+    ImageDraw.Draw(disc).ellipse([bx - br, by - br, bx + br, by + br], fill=body + (255,))
+    if not is_day:                                       # carve the crescent
+        off = int(br * 0.5)
+        ImageDraw.Draw(disc).ellipse([bx - br + off, by - br - int(br * 0.14),
+                                      bx + br + off, by + br - int(br * 0.14)], fill=(0, 0, 0, 0))
+    canvas = Image.alpha_composite(canvas.convert("RGBA"), disc).convert("RGB")
+    tiles = _slice_ambient(canvas, S)
+    _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,   # light text + halo reads on
+                       fill=(244, 248, 253), sub_fill=(214, 224, 238), halo=True)   # bright or dark sky
+    kw, kh = KEY_SIZE
+    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+
+
 def ambient_clock_tiles(hh, mm, weekday, day, month, *, accent=None, drift=(0, 0),
-                        style="classic", phase=0.0):
+                        style="classic", phase=0.0, solar=None):
     """The idle/ambient clock, in the configured design. Text is ALWAYS per-key (real bezels
     are wider than the canvas gap, so spanning text gets chopped on hardware); only the smooth
     backgrounds (rainbow/aurora/ocean/ember fields, night sky) span the grid. `phase` (seconds
@@ -2706,6 +2958,8 @@ def ambient_clock_tiles(hh, mm, weekday, day, month, *, accent=None, drift=(0, 0
         return _ambient_minimal(hh, mm, weekday, day, month, drift)
     if style == "night":
         return _ambient_night(hh, mm, weekday, day, month, drift)
+    if style == "solar":
+        return _ambient_solar(hh, mm, weekday, day, month, drift, solar)
     col = _parse_rgb(accent) if accent is not None else (130, 235, 175)   # soft mint
     sub = (140, 160, 175)
     BIG, MED = 0.66, 0.42
