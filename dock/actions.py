@@ -94,7 +94,7 @@ def _audio(fn, timeout=3.0):
     return _ComAudio.get().call(fn, timeout)
 
 
-_sysvol_chain = None          # (enum, dev, iface, ep) kept ALIVE so the endpoint is never Released
+_sysvol_chain = None          # (enum, dev, iface, ep, dev_id) kept ALIVE so the endpoint is never Released
 _sysvol_retired = []          # chains retired after a device change — kept alive too (see below)
 
 
@@ -117,11 +117,19 @@ def _system_volume():
         from pycaw.pycaw import IAudioEndpointVolume
         for _ in (1, 2):                                  # one rebuild if the cached device vanished
             try:
-                if _sysvol_chain is None:
-                    enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
-                    dev = enum.GetDefaultAudioEndpoint(0, 0)     # eRender, eConsole = default speakers
+                enum = _sysvol_chain[0] if _sysvol_chain else \
+                    CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
+                # Re-check the CURRENT default endpoint every read: the default output changes at
+                # runtime (wireless headphones connect/disconnect, manual switch). A still-valid but
+                # no-longer-default cached endpoint returns a STALE volume WITHOUT raising, so the HUD
+                # freezes on the old device's level. Rebuild when the default device id changes.
+                dev = enum.GetDefaultAudioEndpoint(0, 0)         # eRender, eConsole = default speakers
+                dev_id = dev.GetId()
+                if _sysvol_chain is None or _sysvol_chain[4] != dev_id:
+                    if _sysvol_chain is not None:
+                        _sysvol_retired.append(_sysvol_chain)    # retire, don't free (double-Release)
                     iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    _sysvol_chain = (enum, dev, iface, cast(iface, POINTER(IAudioEndpointVolume)))
+                    _sysvol_chain = (enum, dev, iface, cast(iface, POINTER(IAudioEndpointVolume)), dev_id)
                 ep = _sysvol_chain[3]
                 return int(round(ep.GetMasterVolumeLevelScalar() * 100)), bool(ep.GetMute())
             except Exception:
@@ -515,10 +523,9 @@ class _Mic:
 
     def __init__(self) -> None:
         self._endpoint = None
+        self._dev_id = None
 
     def _ensure(self):
-        if self._endpoint is not None:
-            return self._endpoint
         import comtypes
         from ctypes import POINTER, cast
         from comtypes import CLSCTX_ALL
@@ -540,8 +547,20 @@ class _Mic:
             from pycaw.api.mmdeviceapi import IMMDeviceEnumerator
             enum = CoCreateInstance(CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, CLSCTX_ALL)
             dev = enum.GetDefaultAudioEndpoint(self._EDATAFLOW_CAPTURE, self._EROLE_COMMUNICATIONS)
+        try:
+            dev_id = dev.GetId()
+        except Exception:
+            dev_id = None
+        # Rebind when the default comms mic CHANGES: a still-valid but no-longer-default endpoint
+        # returns a STALE mute state WITHOUT raising (same class of bug as _system_volume). Keep the
+        # cached endpoint when the id is unchanged (or unknown) to avoid per-call churn.
+        if self._endpoint is not None and (dev_id is None or dev_id == self._dev_id):
+            return self._endpoint
+        if self._endpoint is not None:
+            _mic_retired.append(self._endpoint)          # retire the old endpoint (don't free)
         iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         self._endpoint = cast(iface, POINTER(IAudioEndpointVolume))
+        self._dev_id = dev_id
         return self._endpoint
 
     def _retire(self) -> None:
@@ -553,6 +572,7 @@ class _Mic:
         if self._endpoint is not None:
             _mic_retired.append(self._endpoint)
             self._endpoint = None
+        self._dev_id = None
 
     def set(self, muted: bool) -> None:
         for _ in (1, 2):
