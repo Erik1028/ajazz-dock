@@ -22,8 +22,11 @@ import datetime
 import json
 import os
 import shutil
+import threading
 import time
 from typing import Any, Dict, List, Optional
+
+_SAVE_LOCK = threading.Lock()   # serialize save() across the device-loop + Qt threads (shared tmp/replace)
 
 APP_NAME = "AjazzDock"
 LCD_KEYS = ["key1", "key2", "key3", "key4", "key5", "key6"]
@@ -178,7 +181,7 @@ class Config:
                 # which plain json.load would choke on.
                 with open(path, "r", encoding="utf-8-sig") as f:
                     return cls(_migrate(json.load(f)))
-            except (json.JSONDecodeError, OSError, ValueError):
+            except (json.JSONDecodeError, OSError, ValueError, TypeError, AttributeError, KeyError):
                 # NEVER silently overwrite a config we can't parse — set it aside so the
                 # user's bindings can be recovered instead of being clobbered by defaults.
                 for suffix in (".corrupt", ".corrupt1", ".corrupt2"):
@@ -195,21 +198,30 @@ class Config:
     def save(self, path: Optional[str] = None) -> None:
         path = path or config_path()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        # Keep a rolling backup of the last good config before overwriting it.
-        try:
-            if os.path.exists(path):
-                shutil.copyfile(path, path + ".bak")
-        except OSError:
-            pass
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp, path)
-        # Throttled timestamped history so the config is recoverable over time.
-        try:
-            self._write_history(path)
-        except OSError:
-            pass
+        # Serialize the WHOLE save under one process-wide lock: the device-loop thread (encoder
+        # brightness/volume save) and the Qt thread (editor autosave) must never do concurrent file
+        # ops on `path` — on Windows a .bak read racing an os.replace fails with PermissionError.
+        with _SAVE_LOCK:
+            try:                                          # rolling backup of the last good config
+                if os.path.exists(path):
+                    shutil.copyfile(path, path + ".bak")
+            except OSError:
+                pass
+            tmp = f"{path}.{os.getpid()}.tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, indent=2, ensure_ascii=False)
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):                    # never leave a stray tmp on a failed replace
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+            try:                                          # timestamped history for recoverability
+                self._write_history(path)
+            except OSError:
+                pass
 
     _last_snapshot_t = None      # in-memory throttle: skip the backups dir scan on the common path
 
@@ -333,6 +345,8 @@ class Config:
 
 def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
     """Forward-compatible defaults for older/partial config files."""
+    if not isinstance(data, dict):                       # parseable JSON but not our shape (null/list/
+        raise ValueError("config root is not an object")  # str/number) -> quarantine, don't crash boot
     data.setdefault("version", 1)
     data.setdefault("brightness", 70)
     data.setdefault("show_labels", True)

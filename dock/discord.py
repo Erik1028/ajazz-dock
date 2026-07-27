@@ -264,7 +264,8 @@ class _Discord:
             self._ensure()
             cur = getattr(self, attr)
             if cur is None:                                # first turn -> read it once, then cache
-                cur = float(((self._cmd("GET_VOICE_SETTINGS") or {}).get(key) or {}).get("volume") or 100)
+                raw = ((self._cmd("GET_VOICE_SETTINGS") or {}).get(key) or {}).get("volume")
+                cur = float(raw) if raw is not None else 100.0   # keep a genuine 0 (0.0 is falsy)
             cur = max(0.0, min(hi, cur + delta))
             setattr(self, attr, cur)
             v = int(round(cur))
