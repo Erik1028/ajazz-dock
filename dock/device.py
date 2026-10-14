@@ -58,6 +58,7 @@ class Event:
     pressed: bool = False      # for key/button/encoder_push
     delta: int = 0            # for encoder_turn: +1 / -1
     raw_code: int = 0
+    remote: bool = False      # injected by a mirror client (Orbit), not the dock: never accelerated
 
     @property
     def input_id(self) -> str:
@@ -136,6 +137,29 @@ def encode_key_image(img: Image.Image, rotation: int = 90, mirror: bool = False,
     return out
 
 
+def encode_hi(img: Image.Image, quality: int = 90, subsampling: int = 0) -> bytes:
+    """A face's 2x mirror copy (images: img._mirror_hi) as a plain JPEG for Orbit: unrotated, no
+    calibration shift/inset. Cached on the image like encode_key_image, so a cached static face
+    shown again hands the mirror the very same bytes object (= unchanged, nothing re-sent)."""
+    ckey = ("hi", quality, subsampling)
+    _jc = getattr(img, "_jpeg_cache", None)
+    if _jc is not None:
+        hit = _jc.get(ckey)
+        if hit is not None:
+            return hit
+    buf = io.BytesIO()
+    (img if img.mode == "RGB" else img.convert("RGB")).save(buf, format="JPEG", quality=quality,
+                                                            subsampling=subsampling)
+    out = buf.getvalue()
+    try:
+        if _jc is None:
+            _jc = img._jpeg_cache = {}
+        _jc[ckey] = out
+    except (AttributeError, TypeError):
+        pass
+    return out
+
+
 class AKP03:
     """Connection to a single AKP03E device."""
 
@@ -146,10 +170,22 @@ class AKP03:
         self.image_mirror = False
         # Frame tap for dock/mirror.py (Orbit's VR panel): the JPEGs the keys show, exactly as sent,
         # committed by flush(). One tuple swap per flush, so another thread reads the old or the new
-        # set, never half of each. None = a cleared key.
-        self.mirror = (0, (None,) * LCD_KEYS)
+        # set, never half of each. None = a cleared key. (gen, device JPEGs, 2x JPEGs): the 2x copy
+        # is only made while mirror_hi is on (a client asked for it), else None = use the device one.
+        self._mirror_all = (0, (None,) * LCD_KEYS, (None,) * LCD_KEYS)
+        self.mirror_hi = False                    # set on the loop thread (controller.set_mirror_hi)
         self.mirror_dark = False                  # sleep() turned the backlight off
-        self._mx_pending: dict = {}
+        self._mx_pending: dict = {}               # key -> (device JPEG, 2x JPEG | None)
+
+    @property
+    def mirror(self):
+        """(gen, device JPEGs) - the api-1 view of the tap."""
+        return self._mirror_all[:2]
+
+    @property
+    def mirror_full(self):
+        """(gen, device JPEGs, 2x JPEGs) in one atomic read."""
+        return self._mirror_all
 
     # ---- connection --------------------------------------------------------
     @staticmethod
@@ -229,8 +265,9 @@ class AKP03:
         self._write(self._cmd(b"DIS"))
         self.mirror_dark = False
 
-    def set_key_image(self, key: int, jpeg: bytes) -> None:
-        """Upload a JPEG (from encode_key_image) to LCD key 0..5. Call flush() after."""
+    def set_key_image(self, key: int, jpeg: bytes, hi: Optional[bytes] = None) -> None:
+        """Upload a JPEG (from encode_key_image) to LCD key 0..5. Call flush() after. `hi` is only
+        for the mirror tap (the key's 2x JPEG); the device never sees it."""
         if not 0 <= key < LCD_KEYS:
             raise ValueError(f"key out of range: {key}")
         self._ensure_init()
@@ -242,35 +279,45 @@ class AKP03:
             buf = bytearray(REPORT_LEN)
             buf[1:1 + len(chunk)] = chunk
             self._write(bytes(buf))
-        self._mx_pending[key] = jpeg
+        self._mx_pending[key] = (jpeg, hi)
 
     def set_key_pil(self, key: int, img: Image.Image,
                     quality: int = 95, subsampling: int = 0,
                     size=None, shift=None) -> None:
-        self.set_key_image(key, encode_key_image(
-            img, self.image_rotation, self.image_mirror, quality, subsampling, size, shift))
+        jpeg = encode_key_image(img, self.image_rotation, self.image_mirror, quality, subsampling,
+                                size, shift)
+        self.set_key_image(key, jpeg)
+        # The mirror's 2x copy is encoded AFTER the USB write (device latency unchanged), on this
+        # same loop thread; only bytes leave it. Animation-quality writes get a lighter 2x JPEG.
+        src = getattr(img, "_mirror_hi", None) if self.mirror_hi else None
+        if src is not None:
+            try:
+                q, ss = (90, 0) if quality >= 90 else (75, 2)
+                self._mx_pending[key] = (jpeg, encode_hi(src, q, ss))
+            except Exception:
+                pass                                     # no 2x copy -> Orbit shows the device JPEG
 
     def clear_key(self, key: int) -> None:
         self._ensure_init()
         self._write(self._cmd(b"CLE", bytes([0x00, 0x00, 0x00, key + 1])))
-        self._mx_pending[key] = None
+        self._mx_pending[key] = (None, None)
 
     def clear_all(self) -> None:
         self._ensure_init()
         self._write(self._cmd(b"CLE", bytes([0x00, 0x00, 0x00, 0xFF])))
         for k in range(LCD_KEYS):
-            self._mx_pending[k] = None
+            self._mx_pending[k] = (None, None)
 
     def flush(self) -> None:
         """Commit written images to the screen (required)."""
         self._write(self._cmd(b"STP"))
         if self._mx_pending:
-            gen, keys = self.mirror
-            keys = list(keys)
-            for k, jpeg in self._mx_pending.items():
-                keys[k] = jpeg
+            gen, keys, his = self._mirror_all
+            keys, his = list(keys), list(his)
+            for k, (jpeg, hi) in self._mx_pending.items():
+                keys[k], his[k] = jpeg, hi
             self._mx_pending = {}
-            self.mirror = (gen + 1, tuple(keys))
+            self._mirror_all = (gen + 1, tuple(keys), tuple(his))
 
     # ---- input -------------------------------------------------------------
     def read_event(self, timeout_ms: int = 200) -> Optional[Event]:

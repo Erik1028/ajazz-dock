@@ -96,10 +96,19 @@ def _audio(fn, timeout=3.0):
 
 _sysvol_chain = None          # (enum, dev, iface, ep, dev_id) kept ALIVE so the endpoint is never Released
 _sysvol_retired = []          # chains retired after a device change — kept alive too (see below)
+_sysvol_last = None           # (percent, muted, monotonic t) of the last good read/set - a cache for
+                              # the mirror's slider values (written on com-audio, read anywhere)
 
 
-def _system_volume():
+def sysvol_last():
+    """The last known (percent, muted, t) of the default output, or None. Never touches COM."""
+    return _sysvol_last
+
+
+def _system_volume(set_pct: Optional[int] = None):
     """(percent 0..100, muted) of the default output device, or None if it can't be read.
+    With `set_pct` it first SETS the level (and unmutes above 0, like the media keys do), then
+    returns the fresh reading - for the mirror's volume slider (ActionEngine.set_system_volume).
 
     Grabs the raw default render endpoint (eRender=0, eConsole=0) via the MMDevice enumerator, like
     _Mic's fallback. CRITICAL: the endpoint is CACHED and a pycaw audio COM object is NEVER released
@@ -109,7 +118,7 @@ def _system_volume():
     endpoint alive for the process lifetime; a device change just retires the old chain (never frees
     it). Reads reuse the cached endpoint -> zero new COM objects per call -> nothing for GC to free."""
     def _impl():
-        global _sysvol_chain
+        global _sysvol_chain, _sysvol_last
         from ctypes import POINTER, cast
         from comtypes import CLSCTX_ALL, CoCreateInstance
         from pycaw.constants import CLSID_MMDeviceEnumerator
@@ -131,7 +140,14 @@ def _system_volume():
                     iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                     _sysvol_chain = (enum, dev, iface, cast(iface, POINTER(IAudioEndpointVolume)), dev_id)
                 ep = _sysvol_chain[3]
-                return int(round(ep.GetMasterVolumeLevelScalar() * 100)), bool(ep.GetMute())
+                if set_pct is not None:                   # the SAME cached endpoint: no new COM object
+                    p = max(0, min(100, int(set_pct)))
+                    ep.SetMasterVolumeLevelScalar(p / 100.0, None)
+                    if p > 0 and ep.GetMute():
+                        ep.SetMute(0, None)
+                r = int(round(ep.GetMasterVolumeLevelScalar() * 100)), bool(ep.GetMute())
+                _sysvol_last = (r[0], r[1], time.monotonic())
+                return r
             except Exception:
                 if _sysvol_chain is not None:
                     _sysvol_retired.append(_sysvol_chain)        # retire, don't free (double-Release)
@@ -686,6 +702,8 @@ class _MonitorDimmer:
         self._pending: Dict[Any, int] = {}     # key -> accumulated delta
         self._target: Dict[Any, int] = {}      # key -> set-target percent
         self._cur: Dict[Any, float] = {}       # key -> locally-owned set-point % (seeded from DDC once/burst)
+        self._quiet: set = set()               # keys whose pending set shows no knob HUD (a VR slider)
+        self._sync: set = set()                # keys to seed from DDC without changing (prime)
         self._wake = threading.Event()
         self._thread = None
 
@@ -712,14 +730,32 @@ class _MonitorDimmer:
             self._hud(None if k == "all" else k, int(round(proj)))
         self._kick()
 
-    def set(self, value, index) -> None:
+    def set(self, value, index, quiet: bool = False) -> None:
+        """Latest-wins absolute set. `quiet` = no knob HUD (Orbit's slider already shows it)."""
         k = self._key(index)
         v = max(0, min(100, int(value)))
         with self._lock:
             self._target[k] = v
             self._pending.pop(k, None)
-        self._hud(None if k == "all" else k, v)    # optimistic
+            if quiet:
+                self._quiet.add(k)
+            else:
+                self._quiet.discard(k)
+        if not quiet:
+            self._hud(None if k == "all" else k, v)    # optimistic
         self._kick()
+
+    def prime(self, index) -> None:
+        """Seed the set-point cache from DDC (one read, on the dimmer thread) without changing
+        anything - so a VR slider has a value before the first turn."""
+        with self._lock:
+            self._sync.add(self._key(index))
+        self._kick()
+
+    def value(self, index) -> Optional[float]:
+        """The cached set-point % (None until the first read / set). Never touches DDC."""
+        with self._lock:
+            return self._cur.get(self._key(index))
 
     def _kick(self) -> None:
         with self._lock:
@@ -751,6 +787,13 @@ class _MonitorDimmer:
                 with self._lock:
                     pend, self._pending = self._pending, {}
                     targ, self._target = self._target, {}
+                    quiet, self._quiet = self._quiet, set()
+                    sync, self._sync = self._sync, set()
+                for k in sync:
+                    try:
+                        _sess(k, None if k == "all" else k)   # a new session reads the true %
+                    except Exception:
+                        pass
                 for k, delta in pend.items():
                     if not delta:
                         continue
@@ -771,7 +814,8 @@ class _MonitorDimmer:
                         with self._lock:
                             self._cur[k] = float(val)
                         s.set_pct(float(val))
-                        self._hud(idx, int(round(val)))
+                        if k not in quiet:
+                            self._hud(idx, int(round(val)))
                     except Exception:
                         pass
                 time.sleep(0.025)                   # coalesce ticks landing during the DDC write
@@ -799,6 +843,9 @@ class ActionEngine:
         self._work_q = None              # lazily-created queue for the off-loop action worker
         self._sv_ev = threading.Event()  # system-volume HUD reader: one thread, readings in order
         self._sv_thread = None
+        self._sv_lock = threading.Lock()
+        self._sv_target = None           # a VR slider's latest volume % for that same thread (latest-wins)
+        self._sv_hud = False             # a knob detent asked for a HUD reading
 
     # Actions that touch controller navigation state, or hold a thread-bound COM object, or already
     # self-thread, run INLINE (on the device loop thread). Everything else — blocking keyboard /
@@ -1131,25 +1178,52 @@ class ActionEngine:
         those raced each other and delivered their readings OUT OF ORDER (40, 44, 42, 48, 46 ...),
         so the HUD's number and ladder jumped back and forth and its direction chevrons flipped -
         the 'bouncy' look Erik reported. A single thread reads in time order (so a spin up only
-        ever reads higher), and detents landing during the settle delay coalesce into one read."""
+        ever reads higher), and detents landing during the settle delay coalesce into one read.
+        The VR slider's sets and the mirror's quiet polls go through this SAME thread."""
         if self.controller is None or not hasattr(self.controller, "show_value_hud"):
             return
-        if self._sv_thread is None or not self._sv_thread.is_alive():
-            self._sv_thread = threading.Thread(target=self._sysvol_hud_loop, name="sysvol-hud",
-                                               daemon=True)
-            self._sv_thread.start()
+        with self._sv_lock:
+            self._sv_hud = True
+        self._sv_kick()
+
+    def set_system_volume(self, pct: int) -> None:
+        """A VR slider: set the default output to `pct` % (latest-wins, no HUD). Never blocks: the
+        ordered sysvol thread does the COM call (on com-audio, like every read)."""
+        with self._sv_lock:
+            self._sv_target = max(0, min(100, int(pct)))
+        self._sv_kick()
+
+    def poll_system_volume(self) -> None:
+        """A quiet read (no HUD) that refreshes sysvol_last() - the mirror asks ~1 Hz while watched."""
+        self._sv_kick()
+
+    def _sv_kick(self) -> None:
+        with self._sv_lock:
+            if self._sv_thread is None or not self._sv_thread.is_alive():
+                self._sv_thread = threading.Thread(target=self._sysvol_hud_loop, name="sysvol-hud",
+                                                   daemon=True)
+                self._sv_thread.start()
         self._sv_ev.set()
 
     def _sysvol_hud_loop(self):
         while True:
             self._sv_ev.wait()
             self._sv_ev.clear()
-            time.sleep(0.05)                      # let the media key settle
+            with self._sv_lock:
+                target, self._sv_target = self._sv_target, None
+                hud, self._sv_hud = self._sv_hud, False
+            r = None
             try:
-                r = _system_volume()
+                if target is not None:
+                    r = _system_volume(target)    # set + read back, no settle delay
+                if hud:
+                    time.sleep(0.05)              # let the media key settle
+                    r = _system_volume()
+                elif target is None:
+                    r = _system_volume()          # a quiet poll
             except Exception:
                 r = None
-            if r is not None:
+            if r is not None and hud:
                 pct, muted = r
                 self._hud(pct, "Volume", muted=muted)
 
@@ -1163,19 +1237,39 @@ class ActionEngine:
         else:
             self._hud(int(value), "Bulb", accent=_HUD_MINT)
 
-    def _monitor(self, action: Dict[str, Any]) -> None:
-        mode = (action.get("monitor") or "up").lower()
+    @staticmethod
+    def monitor_index(action: Dict[str, Any]) -> Optional[int]:
+        """A monitor action's target: None = all monitors, else the monitor's index."""
         idx = action.get("index")
         if idx in (None, "", "all", -1, "-1"):
-            idx = None
-        else:
-            try:
-                idx = int(idx)
-            except (TypeError, ValueError):
-                idx = None
-        step = max(1, int(action.get("step", 5)))
+            return None
+        try:
+            return int(idx)
+        except (TypeError, ValueError):
+            return None
+
+    def _dimmer(self) -> "_MonitorDimmer":
         if self._mon_dimmer is None:
             self._mon_dimmer = _MonitorDimmer(self.controller)
+        return self._mon_dimmer
+
+    def set_monitor_brightness(self, pct: int, index: Optional[int], quiet: bool = True) -> None:
+        """A VR slider: latest-wins set through the dimmer worker (non-blocking, no HUD if quiet)."""
+        self._dimmer().set(pct, index, quiet=quiet)
+
+    def prime_monitor(self, index: Optional[int]) -> None:
+        """Read the monitor(s)' true % once on the dimmer thread, so monitor_value() is known."""
+        self._dimmer().prime(index)
+
+    def monitor_value(self, index: Optional[int]) -> Optional[float]:
+        """The dimmer's cached set-point %, or None. Never touches DDC."""
+        return None if self._mon_dimmer is None else self._mon_dimmer.value(index)
+
+    def _monitor(self, action: Dict[str, Any]) -> None:
+        mode = (action.get("monitor") or "up").lower()
+        idx = self.monitor_index(action)
+        step = max(1, int(action.get("step", 5)))
+        self._dimmer()
         if mode == "set":
             self._mon_dimmer.set(int(action.get("value", 50)), idx)
         elif mode == "down":

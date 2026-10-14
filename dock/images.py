@@ -23,7 +23,7 @@ _BOLD_FONTS = ["C:/Windows/Fonts/segoeuib.ttf", "C:/Windows/Fonts/arialbd.ttf"]
 _EMOJI_FONT = "C:/Windows/Fonts/seguiemj.ttf"
 
 
-@lru_cache(maxsize=64)
+@lru_cache(maxsize=128)                  # 2x mirror faces add their own sizes
 def _font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
     for p in (_BOLD_FONTS if bold else _TEXT_FONTS):
         if os.path.exists(p):
@@ -40,6 +40,40 @@ def _emoji_font(size: int) -> Optional[ImageFont.FreeTypeFont]:
         except OSError:
             return None
     return None
+
+
+# ---- high-res copies for the mirror (Orbit's VR panel, dock/mirror.py) -----------------------------
+# Only while a mirror client asked for sharp faces, and only on the thread that turned it on (the
+# dock loop): the device renderers then attach a clean 2x copy as `img._mirror_hi` (unrotated, no
+# calibration shift/inset). The device face itself is unchanged; the GUI's previews never pay for it.
+_HI = threading.local()
+
+
+def set_mirror_hi(on: bool) -> None:
+    """Turn the 2x mirror copies on/off for the CALLING thread (the dock loop)."""
+    _HI.on = bool(on)
+
+
+def mirror_hi() -> bool:
+    return getattr(_HI, "on", False)
+
+
+def _attach_hi(img: Image.Image, make) -> Image.Image:
+    """Attach make()'s 2x copy to a device face (once; a cached face keeps it)."""
+    if getattr(img, "_mirror_hi", None) is None:
+        try:
+            img._mirror_hi = make()
+        except Exception:
+            pass                                         # a failed 2x copy -> the device JPEG is used
+    return img
+
+
+def _down(t: Image.Image, kw: int, kh: int) -> Image.Image:
+    """The final 2x -> device downscale of an ambient tile, keeping the 2x tile as its mirror copy."""
+    out = t.resize((kw, kh), Image.LANCZOS)
+    if mirror_hi():
+        out._mirror_hi = t if t.size == (2 * kw, 2 * kh) else t.resize((2 * kw, 2 * kh), Image.LANCZOS)
+    return out
 
 
 def parse_color(c: Optional[str], fallback: str = DEFAULT_BG) -> Tuple[int, int, int]:
@@ -252,12 +286,12 @@ def _grad_swatch_tile(size: Tuple[int, int], kind: str) -> Image.Image:
 
 
 def _draw_swatch(img: Image.Image, swatch: Tuple[str, str], item: Dict[str, Any],
-                 size: Tuple[int, int], has_label: bool) -> None:
+                 size: Tuple[int, int], has_label: bool, scale: int = 1) -> None:
     """Draw a centred rounded-square swatch (solid colour or gradient) on `img`. Its side is
     item['swatch_size'] percent of the tile (40..100, default 70); corners are rounded."""
     kind, val = swatch
     w, h = size
-    band = 18 if has_label else 0
+    band = 18 * scale if has_label else 0
     avail = min(w, h - band)
     try:
         pct = int(float(item.get("swatch_size", 70)))
@@ -333,13 +367,14 @@ def has_icon_style(item: Dict[str, Any]) -> bool:
 
 
 def _render_styled_icon(base: Image.Image, src: Image.Image, item: Dict[str, Any],
-                        size, has_label: bool, fit: str):
+                        size, has_label: bool, fit: str, px: int = 1):
     """Composite a fully-styled icon (image OR emoji) onto `base`: zoom, move, rotate, opacity,
     rounded corners, app-tile, border, drop shadow. `src` is an RGBA source image. Returns RGB.
+    `px` multiplies the fixed pixel sizes (band, border, shadow) for a 2x mirror copy.
     """
     w, h = size
     src = src.convert("RGBA")
-    band = 18 if has_label else 0
+    band = 18 * px if has_label else 0
     scale = max(0.25, min(1.5, float(item.get("icon_scale", 1.0))))
     bw = max(8, int(round(w * scale)))
     bh = max(8, int(round((h - band) * scale)))
@@ -363,7 +398,7 @@ def _render_styled_icon(base: Image.Image, src: Image.Image, item: Dict[str, Any
         rad = int(min(bw, bh) * radius_pct / 100.0)
 
     # border / stroke that follows the (rounded) shape
-    border_w = max(0, min(10, int(item.get("icon_border", 0))))
+    border_w = max(0, min(10, int(item.get("icon_border", 0)))) * px
     if border_w > 0:
         bcol = parse_color(item.get("icon_border_color"), "#ffffff")
         off = border_w / 2.0
@@ -388,24 +423,25 @@ def _render_styled_icon(base: Image.Image, src: Image.Image, item: Dict[str, Any
 
     out = base.convert("RGBA")
     if item.get("icon_shadow"):                      # soft drop shadow behind the icon
-        sh = Image.new("RGBA", (cw + 12, ch + 12), (0, 0, 0, 0))
+        s6 = 6 * px
+        sh = Image.new("RGBA", (cw + 2 * s6, ch + 2 * s6), (0, 0, 0, 0))
         silhouette = Image.new("RGBA", content.size, (0, 0, 0, 0))
         silhouette.putalpha(content.split()[3].point(lambda a: int(a * 0.55)))
-        sh.alpha_composite(silhouette, (6, 6))
-        sh = sh.filter(ImageFilter.GaussianBlur(3))
-        out.alpha_composite(sh, (ox - 6 + 1, oy - 6 + 2))
+        sh.alpha_composite(silhouette, (s6, s6))
+        sh = sh.filter(ImageFilter.GaussianBlur(3 * px))
+        out.alpha_composite(sh, (ox - s6 + px, oy - s6 + 2 * px))
     out.alpha_composite(content, (ox, oy))
     return out.convert("RGB")
 
 
 def _render_image_icon(base: Image.Image, icon_path: str, item: Dict[str, Any],
-                       size, has_label: bool, fit: str):
+                       size, has_label: bool, fit: str, scale: int = 1):
     """Open an image file and run it through the styling pipeline (None if it won't open)."""
     try:
         src = Image.open(icon_path).convert("RGBA")
     except (OSError, ValueError):
         return None
-    return _render_styled_icon(base, src, item, size, has_label, fit)
+    return _render_styled_icon(base, src, item, size, has_label, fit, scale)
 
 
 # ---- rendered-face cache -------------------------------------------------------------------
@@ -461,21 +497,38 @@ def clear_face_cache() -> None:
         _FACE_CACHE.clear()
 
 
+def drop_mirror_hi() -> None:
+    """The last sharp-face mirror client left: free the 2x copies the cached faces carry."""
+    with _FACE_LOCK:
+        for img in _FACE_CACHE.values():
+            if getattr(img, "_mirror_hi", None) is not None:
+                try:
+                    del img._mirror_hi
+                except AttributeError:
+                    pass
+
+
 def render_face(item: Dict[str, Any], size: Optional[Tuple[int, int]] = None,
-                show_label: bool = True) -> Image.Image:
+                show_label: bool = True, scale: int = 1) -> Image.Image:
     """Render a binding's visual face. `item` may have label / icon / color / text_color.
-    Identical inputs come back from the face cache instead of re-compositing."""
-    if size is None:
+    Identical inputs come back from the face cache instead of re-compositing. `scale` multiplies
+    the fixed pixel sizes (label band, fonts, margins) for a 2x render of the same layout. A device
+    face (size None) carries a 2x mirror copy while mirror_hi() is on."""
+    device = size is None
+    if device:
         size = KEY_SIZE                          # read the CURRENT (calibrated) module value
-    sig = _face_sig("face", item, size, show_label)
-    hit = _face_cache_get(sig)
-    if hit is not None:
-        return hit
-    return _face_cache_put(sig, _render_face_impl(item, size, show_label))
+    sig = _face_sig("face", item, size, show_label, (scale,) if scale != 1 else ())
+    face = _face_cache_get(sig)
+    if face is None:
+        face = _face_cache_put(sig, _render_face_impl(item, size, show_label, scale))
+    if device and mirror_hi():
+        w, h = size
+        _attach_hi(face, lambda: _render_face_impl(item, (2 * w, 2 * h), show_label, 2))
+    return face
 
 
 def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
-                      show_label: bool) -> Image.Image:
+                      show_label: bool, scale: int = 1) -> Image.Image:
     bg = parse_color(item.get("color"), DEFAULT_BG)
     if item.get("text_color"):
         fg = parse_color(item.get("text_color"), DEFAULT_FG)
@@ -504,27 +557,28 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
     def _label_overlay():
         nonlocal img, draw
         overlay = Image.new("RGBA", size, (0, 0, 0, 0))
-        ImageDraw.Draw(overlay).rectangle([0, h - 18, w, h], fill=(0, 0, 0, 150))
+        ImageDraw.Draw(overlay).rectangle([0, h - 18 * scale, w, h], fill=(0, 0, 0, 150))
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(img)
-        font = _font(12)
+        font = _font(12 * scale)
         # The scrim band is always dark: white auto-contrast reads on it (the key's own light-bg dark
         # fg would be dark-on-dark). Respect an explicit text_color. Elide so no leading word is lost.
         band_fg = fg if item.get("text_color") else parse_color(DEFAULT_FG)
-        draw.text((w // 2, h - 9), _elide(draw, label, font, w - 4), font=font, fill=band_fg, anchor="mm")
+        draw.text((w // 2, h - 9 * scale), _elide(draw, label, font, w - 4 * scale), font=font,
+                  fill=band_fg, anchor="mm")
 
     if swatch:                                       # colour-/effect-action key -> a rounded swatch
-        _draw_swatch(img, swatch, item, size, has_label)
+        _draw_swatch(img, swatch, item, size, has_label, scale)
         if has_label:
             _label_overlay()
         return img
 
     # A crisp Segoe Fluent icon ("fluent:<name>"), tinted with the key's text colour.
     if has_icon and icon.startswith("fluent:"):
-        band = 18 if has_label else 0
+        band = 18 * scale if has_label else 0
         avail_h = h - band
         if _draw_fluent(img, icon[7:], w // 2, avail_h // 2, int(min(w, avail_h) * 0.60),
-                        fg, max_box=(w - 8, avail_h - 8)):
+                        fg, max_box=(w - 8 * scale, avail_h - 8 * scale)):
             if has_label:
                 _label_overlay()
             return img
@@ -534,7 +588,7 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
     # image letterboxed (never crops a non-square PNG), padded with the background colour.
     if has_icon and _looks_like_path(icon):
         if has_icon_style(item):                     # zoom / rounded corners / app-tile
-            styled = _render_image_icon(img, icon, item, size, has_label, fit)
+            styled = _render_image_icon(img, icon, item, size, has_label, fit, scale)
             if styled is not None:
                 img = styled
                 if has_label:
@@ -559,7 +613,7 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
     if has_icon and not _looks_like_path(icon) and has_icon_style(item):
         em = emoji_image(icon, int(max(w, h) * 1.8))
         if em is not None:
-            styled = _render_styled_icon(img, em, item, size, has_label, "contain")
+            styled = _render_styled_icon(img, em, item, size, has_label, "contain", scale)
             if styled is not None:
                 img = styled
                 if has_label:
@@ -568,13 +622,13 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
 
     # Emoji icon -> fill the key with a big glyph (cover), unless fit=="contain".
     if has_icon and not _looks_like_path(icon) and fit == "cover":
-        band = 18 if has_label else 0                     # reserve the bottom label strip
+        band = 18 * scale if has_label else 0             # reserve the bottom label strip
         avail_h = h - band
         # Size off the SMALLER of width / available-height so a wide or tall glyph (or a
         # non-square calibrated tile) is never clipped; max_box is a hard clamp.
         target = int(min(w, avail_h) * 0.98)
         cy = avail_h // 2
-        if _draw_emoji(img, icon, w // 2, cy, target, max_box=(w - 2, avail_h - 2)):
+        if _draw_emoji(img, icon, w // 2, cy, target, max_box=(w - 2 * scale, avail_h - 2 * scale)):
             if has_label:
                 _label_overlay()
             return img
@@ -592,36 +646,36 @@ def _render_face_impl(item: Dict[str, Any], size: Tuple[int, int],
             except (OSError, ValueError):
                 icon_drawn = False
         else:
-            avail_h = (h - 18) if has_label else h
+            avail_h = (h - 18 * scale) if has_label else h
             icon_drawn = _draw_emoji(img, icon, w // 2, icon_cy, target,
-                                     max_box=(w - 2, avail_h - 2))
+                                     max_box=(w - 2 * scale, avail_h - 2 * scale))
         # If an emoji/icon failed, treat its text as a label fallback.
         if not icon_drawn and not has_label:
             label, has_label = icon, True
 
     if has_label:
         if icon_drawn:
-            font = _font(12)
-            lines = _wrap(draw, label, font, w - 4)
+            font = _font(12 * scale)
+            lines = _wrap(draw, label, font, w - 4 * scale)
             # Center the label within the bottom band so nothing clips at the edge.
             band_top = int(h * 0.58)
-            total = len(lines) * font.size + (len(lines) - 1)
+            total = len(lines) * font.size + (len(lines) - 1) * scale
             y = band_top + (h - band_top - total) // 2 + font.size // 2
             for ln in lines:
                 draw.text((w // 2, y), ln, font=font, fill=fg, anchor="mm")
-                y += font.size + 1
+                y += font.size + scale
         else:
             # Center, larger; shrink font to fit up to 2 lines.
             for fs in (22, 19, 16, 14, 12):
-                font = _font(fs)
-                lines = _wrap(draw, label, font, w - 6)
-                if all(draw.textlength(ln, font=font) <= w - 6 for ln in lines):
+                font = _font(fs * scale)
+                lines = _wrap(draw, label, font, w - 6 * scale)
+                if all(draw.textlength(ln, font=font) <= w - 6 * scale for ln in lines):
                     break
-            total_h = len(lines) * (font.size + 2)
+            total_h = len(lines) * (font.size + 2 * scale)
             y = (h - total_h) // 2 + font.size // 2
             for ln in lines:
                 draw.text((w // 2, y), ln, font=font, fill=fg, anchor="mm")
-                y += font.size + 2
+                y += font.size + 2 * scale
 
     return img
 
@@ -643,28 +697,35 @@ _FOLDER_PREVIEW_KEYS = ("key1", "key2", "key3", "key4", "key5", "key6")
 
 
 def folder_face(item: Dict[str, Any], contents: Dict[str, Any],
-                size: Optional[Tuple[int, int]] = None, show_label: bool = True) -> Image.Image:
+                size: Optional[Tuple[int, int]] = None, show_label: bool = True,
+                scale: int = 1) -> Image.Image:
     """An iOS/macOS-style folder tile: the contained keys' icons in a mini-grid on a tray,
     so a folder key is instantly recognisable and shows what's inside.
 
     `item` is the folder key's binding (colour/label); `contents` is the folder's items dict.
-    Cached like render_face — the contents dict is part of the signature.
+    Cached like render_face — the contents dict is part of the signature. `scale` / the 2x
+    mirror copy work as in render_face.
     """
-    if size is None:
+    device = size is None
+    if device:
         size = KEY_SIZE
     try:
         cblob = json.dumps(contents, sort_keys=True, default=str)
     except (TypeError, ValueError):
         cblob = None
-    sig = _face_sig("folder", item, size, show_label, (cblob,)) if cblob is not None else None
-    hit = _face_cache_get(sig)
-    if hit is not None:
-        return hit
-    return _face_cache_put(sig, _folder_face_impl(item, contents, size, show_label))
+    sig = (_face_sig("folder", item, size, show_label, (cblob,) + ((scale,) if scale != 1 else ()))
+           if cblob is not None else None)
+    face = _face_cache_get(sig)
+    if face is None:
+        face = _face_cache_put(sig, _folder_face_impl(item, contents, size, show_label, scale))
+    if device and mirror_hi():
+        w, h = size
+        _attach_hi(face, lambda: _folder_face_impl(item, contents, (2 * w, 2 * h), show_label, 2))
+    return face
 
 
 def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
-                      size: Tuple[int, int], show_label: bool) -> Image.Image:
+                      size: Tuple[int, int], show_label: bool, scale: int = 1) -> Image.Image:
     w, h = size
     bg = parse_color(item.get("color"), DEFAULT_BG)
     lum = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2]
@@ -673,7 +734,7 @@ def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
 
     label = (item.get("label") or "").strip() if show_label else ""
     has_label = bool(label)
-    band = 18 if has_label else 0
+    band = 18 * scale if has_label else 0
 
     pad = max(3, int(min(w, h) * 0.08))
     tx0, ty0, tx1, ty1 = pad, pad, w - pad, h - band - pad
@@ -715,13 +776,13 @@ def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
             r, c = divmod(idx, cols)
             x, y = ox + c * (cell + gap), oy + r * (cell + gap)
             cdraw.rounded_rectangle([x, y, x + cell - 1, y + cell - 1], radius=crad, fill=(0, 0, 0, 80))
-            mini = render_face(it, size=(cell, cell), show_label=False).convert("RGBA")
+            mini = render_face(it, size=(cell, cell), show_label=False, scale=scale).convert("RGBA")
             content.paste(mini, (x, y), cmask)
             cdraw.rounded_rectangle([x, y, x + cell - 1, y + cell - 1], radius=crad,
                                     outline=(255, 255, 255, 36), width=max(1, int(cell * 0.03)))
     else:
         _draw_emoji(content, "📁", w // 2, (h - band) // 2, int(min(w, h - band) * 0.62),
-                    max_box=(w - 6, (h - band) - 6))
+                    max_box=(w - 6 * scale, (h - band) - 6 * scale))
 
     sc = max(0.4, min(1.6, float(item.get("icon_scale", 1.0))))   # resize the folder icon per key
     if abs(sc - 1.0) > 0.01:
@@ -733,12 +794,13 @@ def _folder_face_impl(item: Dict[str, Any], contents: Dict[str, Any],
 
     if has_label:
         overlay = Image.new("RGBA", size, (0, 0, 0, 0))
-        ImageDraw.Draw(overlay).rectangle([0, h - 18, w, h], fill=(0, 0, 0, 150))
+        ImageDraw.Draw(overlay).rectangle([0, h - 18 * scale, w, h], fill=(0, 0, 0, 150))
         img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
         d = ImageDraw.Draw(img)
-        font = _font(12)
+        font = _font(12 * scale)
         band_fg = fg if item.get("text_color") else parse_color(DEFAULT_FG)   # white on the dark scrim
-        d.text((w // 2, h - 9), _elide(d, label, font, w - 4), font=font, fill=band_fg, anchor="mm")
+        d.text((w // 2, h - 9 * scale), _elide(d, label, font, w - 4 * scale), font=font,
+               fill=band_fg, anchor="mm")
 
     return img
 
@@ -1497,6 +1559,11 @@ def timer_face(shown_s: int, total_s: int, running: bool, finished: bool, flash_
     """A countdown / stopwatch key face: big MM:SS (H:MM:SS over an hour), a caption on top, a
     remaining-fraction bar for countdowns, dim digits while paused, and a red flash while the
     just-finished alarm is showing. Rendered by the CONTROLLER from its per-key timer state."""
+    if size is None and mirror_hi():                             # device face + its 2x mirror copy
+        kw, kh = KEY_SIZE
+        return _attach_hi(timer_face(shown_s, total_s, running, finished, flash_on, label, KEY_SIZE),
+                          lambda: timer_face(shown_s, total_s, running, finished, flash_on, label,
+                                             (2 * kw, 2 * kh)))
     w, h = size or KEY_SIZE
     if finished and flash_on:
         img = Image.new("RGB", (w, h), (186, 46, 42))            # alarm flash frame
@@ -1534,8 +1601,10 @@ def live_face(item: Dict[str, Any], text: str, caption: str, frac: Optional[floa
     """A dynamic-data tile whose icon fits the source. `style` picks the metric design
     (gauge / ring / bar / dial / minimal). Rendered at 3x and downscaled for anti-aliasing.
     `scroll` (px) marquees an overflowing now-playing title; None = static (ellipsised) for previews.
+    A device face (size None) takes its 2x mirror copy from the same 3x render while mirror_hi() is on.
     """
-    if size is None:
+    device = size is None
+    if device:
         size = KEY_SIZE
     ss = 3
     w, h = size[0] * ss, size[1] * ss                         # supersample, downscale at the end
@@ -1877,7 +1946,10 @@ def live_face(item: Dict[str, Any], text: str, caption: str, frac: Optional[floa
         content = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         content.paste(scaled, ((w - nw) // 2, (h - nh) // 2), scaled)
     img = Image.alpha_composite(img.convert("RGBA"), content).convert("RGB")
-    return img.resize(size, Image.LANCZOS)
+    out = img.resize(size, Image.LANCZOS)
+    if device and mirror_hi():
+        out._mirror_hi = img.resize((2 * size[0], 2 * size[1]), Image.LANCZOS)
+    return out
 
 
 def _parse_rgb(c, default=(53, 224, 138)):
@@ -1993,7 +2065,7 @@ def _ambient_tile(text, color, frac, drift=(0, 0)):
         fs -= 2
     dx, dy = int(drift[0]) * S, int(drift[1]) * S
     d.text((w2 // 2 + dx, h2 // 2 + dy), text, font=_font(fs, bold=True), fill=color, anchor="mm")
-    return img.resize((kw, kh), Image.LANCZOS)
+    return _down(img, kw, kh)
 
 
 # ---- ambient / idle-screen designs -----------------------------------------------------------
@@ -2223,7 +2295,7 @@ def _ambient_matrix(hh, mm, weekday, day, month, drift, phase):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(210, 255, 215), sub_fill=(150, 230, 165), halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 @lru_cache(maxsize=2)
@@ -2367,7 +2439,7 @@ def ambient_weather_tiles(wx, hh, mm, drift=(0, 0)):
     hilo = f"{hi}° {lo}°" if hi is not None and lo is not None else ""
     _ambient_halo_text(tiles[4], hilo, 0.28, DIM, dx, dy)
     _ambient_halo_text(tiles[5], label[:9], 0.26, DIM, dx, dy)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _str_hue(s: str) -> float:
@@ -2555,7 +2627,7 @@ def ambient_now_playing_tiles(title, artist, art, phase, playing=True, pos=None)
         if fillw > 0:
             d.rectangle([0, y0, fillw, y1], fill=(255, 92, 170))  # neon-pink played portion
             d.rectangle([max(0, fillw - 2), y0, fillw, y1], fill=(255, 205, 236))   # bright head
-    return [t.resize((kw, kh), Image.LANCZOS) for t in _slice_ambient(canvas, S)]
+    return [_down(t, kw, kh) for t in _slice_ambient(canvas, S)]
 
 
 def _ambient_field(style, hh, mm, weekday, day, month, drift, phase):
@@ -2576,7 +2648,7 @@ def _ambient_field(style, hh, mm, weekday, day, month, drift, phase):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=fill, sub_fill=sub_fill, halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _nixie_tile(text, frac, drift):
@@ -2612,7 +2684,7 @@ def _nixie_tile(text, frac, drift):
     # a thin glass reflection down the left of the envelope
     d.line([(inset + int(w2 * 0.055), top + rad), (inset + int(w2 * 0.055), bot - rad)],
            fill=(148, 136, 124), width=1)
-    return img.resize((kw, kh), Image.LANCZOS)
+    return _down(img, kw, kh)
 
 
 def _ambient_nixie(hh, mm, weekday, day, month, drift):
@@ -2740,7 +2812,7 @@ def _ambient_synthwave(hh, mm, weekday, day, month, drift, phase=0.0):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(255, 244, 250), sub_fill=(232, 180, 224), halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _ambient_starfield(hh, mm, weekday, day, month, drift, phase):
@@ -2771,7 +2843,7 @@ def _ambient_starfield(hh, mm, weekday, day, month, drift, phase):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(232, 238, 248), sub_fill=(150, 166, 192), halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 @lru_cache(maxsize=4)
@@ -2812,7 +2884,7 @@ def _ambient_plasma(hh, mm, weekday, day, month, drift, phase):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(255, 255, 255), sub_fill=(238, 242, 248), halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _ambient_lava(hh, mm, weekday, day, month, drift, phase):
@@ -2841,7 +2913,7 @@ def _ambient_lava(hh, mm, weekday, day, month, drift, phase):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(255, 246, 236), sub_fill=(230, 188, 168), halo=True)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _flip_tile(text, frac, drift):
@@ -2871,7 +2943,7 @@ def _flip_tile(text, frac, drift):
     d.rectangle([inset - 2, mid - ph // 2, inset + pw, mid + ph // 2], fill=(14, 15, 17))
     d.rectangle([w2 - inset - pw, mid - ph // 2, w2 - inset + 2, mid + ph // 2],
                 fill=(14, 15, 17))
-    return img.resize((kw, kh), Image.LANCZOS)
+    return _down(img, kw, kh)
 
 
 def _ambient_flip(hh, mm, weekday, day, month, drift):
@@ -2891,6 +2963,10 @@ def _ambient_minimal(hh, mm, weekday, day, month, drift):
     kw, kh = KEY_SIZE
     blank = Image.new("RGB", (kw, kh), (6, 9, 12))
     tiles = [blank.copy() for _ in range(6)]
+    if mirror_hi():                                  # one shared 2x blank -> one cached JPEG
+        hi = Image.new("RGB", (2 * kw, 2 * kh), (6, 9, 12))
+        for t in tiles:
+            t._mirror_hi = hi
     tiles[1] = _ambient_tile(f"{hh}:{mm}", (118, 128, 138), 0.34, drift)
     tiles[4] = _ambient_tile(f"{day} {month}", (66, 74, 82), 0.20, drift)
     return tiles
@@ -2925,7 +3001,7 @@ def _ambient_night(hh, mm, weekday, day, month, drift):
     tiles = _slice_ambient(canvas, S)
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,
                        fill=(212, 222, 240), sub_fill=(132, 146, 170), halo=False)
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def _solar_sky(now_min, sr, ss):
@@ -3014,7 +3090,7 @@ def _ambient_solar(hh, mm, weekday, day, month, drift, solar):
     _ambient_grid_text(tiles, hh, mm, weekday, day, month, drift, S,   # light text + halo reads on
                        fill=(244, 248, 253), sub_fill=(214, 224, 238), halo=True)   # bright or dark sky
     kw, kh = KEY_SIZE
-    return [t.resize((kw, kh), Image.LANCZOS) for t in tiles]
+    return [_down(t, kw, kh) for t in tiles]
 
 
 def ambient_clock_tiles(hh, mm, weekday, day, month, *, accent=None, drift=(0, 0),

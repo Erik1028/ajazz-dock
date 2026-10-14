@@ -15,6 +15,7 @@ from .device import AKP03, Event
 import os
 
 from . import live
+from . import images as _images
 from .apppoller import ForegroundPoller
 from .images import (render_face, press_frames, page_swipe_frames, folder_face,
                      folder_transition_frames, expand_gen, live_face, panel_frames, timer_face,
@@ -42,6 +43,10 @@ _ENC_ACCEL_DEFAULT = {"volume": 1, "brightness": 10, "monitor": 5, "appvolume": 
 # case we wait to disambiguate. A simple tap-only key keeps zero latency.
 _HOLD_T = 0.5              # s a key must be held to fire its 'hold' action
 _DOUBLE_T = 0.28          # s window to catch a second tap (double-tap)
+# Mirror sliders (Orbit's VR panel): the turn kinds Hexpad can both read and set absolutely.
+_ABS_KINDS = ("brightness", "volume", "monitor")
+_JOG_MAX = 10              # detents one jog message may fire
+_BRIGHT_SAVE_IDLE = 1.0    # s a slider-set dock brightness rests before it is saved (no 'final' seen)
 
 
 def _log_error(where: str, exc: BaseException) -> None:
@@ -69,23 +74,24 @@ def _log_debug(msg: str) -> None:
 
 
 def remote_event(input_id: str, down: Optional[bool], turn: int) -> Optional[Event]:
-    """'key3' + down -> Event('key', 2, ...), 'btn7' -> button 6, 'enc1' + turn -> encoder_turn 1."""
+    """'key3' + down -> Event('key', 2, ...), 'btn7' -> button 6, 'enc1' + turn -> encoder_turn 1.
+    Marked remote: a remote turn is never accelerated (see _handle_event)."""
     try:
         if input_id.startswith("key") and down is not None:
             i = int(input_id[3:]) - 1
             if 0 <= i < len(LCD_KEYS):
-                return Event("key", i, bool(down))
+                return Event("key", i, bool(down), remote=True)
         elif input_id.startswith("btn") and down is not None:
             i = int(input_id[3:]) - 1
             if 6 <= i <= 8:
-                return Event("button", i, bool(down))
+                return Event("button", i, bool(down), remote=True)
         elif input_id.startswith("enc"):
             i = int(input_id[3:])
             if 0 <= i <= 2:
                 if turn:
-                    return Event("encoder_turn", i, delta=1 if turn > 0 else -1)
+                    return Event("encoder_turn", i, delta=1 if turn > 0 else -1, remote=True)
                 if down is not None:
-                    return Event("encoder_push", i, bool(down))
+                    return Event("encoder_push", i, bool(down), remote=True)
     except (ValueError, TypeError):
         pass
     return None
@@ -144,6 +150,15 @@ class DockController:
         self._wake_requested = False
         self.mirror_clients = 0               # connected panels -> the loop polls faster while > 0
         self.on_input: Optional[Callable[[Event], None]] = None
+        # Its knob sliders: encoder index -> (kind, value 0..1, final), latest-wins, applied on the
+        # loop (_apply_set). A slider-set dock brightness is saved on 'final' (or after 1 s of rest).
+        self._remote_set: Dict[int, tuple] = {}
+        self._set_lock = threading.Lock()
+        self._bright_save_at = 0.0
+        # Sharp faces: a client asked for 2x copies -> requested from any thread, applied on the loop
+        # (images' flag is thread-local to the loop; the tap encodes there).
+        self._mirror_hi = False
+        self._mirror_hi_req = False
         self._retries = 0                     # consecutive failed reconnect scans (backoff)
         self._has_live = False                # current page has at least one live/dynamic key
         self._live_last = 0.0                 # last live-key refresh timestamp
@@ -544,14 +559,173 @@ class DockController:
         the first real press would only wake the screen and be swallowed)."""
         self._wake_requested = True
 
+    def jog(self, input_id: str, steps: int) -> bool:
+        """A VR jog slider: fire encoder enc0..enc2's turn binding |steps| times (at most 10), each
+        like one slow detent (never accelerated). Leaves the idle screen first, so no step is
+        swallowed. Any thread; the loop handles it. False = not a valid jog."""
+        try:
+            n = max(-_JOG_MAX, min(_JOG_MAX, int(steps)))
+        except (TypeError, ValueError):
+            return False
+        if remote_event(input_id, None, n) is None or not input_id.startswith("enc"):
+            return False
+        self._wake_requested = True                 # drained before the steps below
+        for _ in range(abs(n)):
+            self._remote.append(remote_event(input_id, None, n))
+        return True
+
+    def request_set(self, input_id: str, kind: str, value, final: bool = False) -> bool:
+        """A VR slider drag: set encoder enc0..enc2's CURRENT turn value to `value` (0..1). Any
+        thread; latest-wins per encoder (a 'final' is never lost to a later tick). The loop applies
+        it only if the binding still has this kind (an auto page switch mid-drag can't turn a volume
+        drag into a monitor set). No knob HUD. False = not a valid request."""
+        try:
+            i = int(input_id[3:]) if str(input_id).startswith("enc") else -1
+            v = float(value)
+        except (TypeError, ValueError):
+            return False
+        if not (0 <= i <= 2) or not math.isfinite(v) or not isinstance(kind, str):
+            return False
+        v = max(0.0, min(1.0, v))
+        with self._set_lock:
+            prev = self._remote_set.get(i)
+            self._remote_set[i] = (kind, v, bool(final) or bool(prev and prev[2]))
+        return True
+
     def _drain_remote(self) -> None:
         if self._wake_requested:
             self._wake_requested = False
             self._last_input = time.time()
             if self._ambient is not None:
                 self._wake_ambient()
+        if self._remote_set:
+            with self._set_lock:
+                sets, self._remote_set = self._remote_set, {}
+            for i, (kind, v, final) in sets.items():
+                try:
+                    self._apply_set(i, kind, v, final)
+                except Exception as e:                 # a bad set must never kill the loop
+                    _log_error("mirror set", e)
         while self._remote:
             self._handle_event(self._remote.popleft())
+        if self._bright_save_at and time.time() - self._bright_save_at >= _BRIGHT_SAVE_IDLE:
+            self._save_brightness()                    # the drag rested without a 'final'
+
+    # ---- mirror sliders (dock/mirror.py) ----------------------------------------------------
+    @staticmethod
+    def _turn_relative(a) -> bool:
+        """A plain relative nudge an absolute slider can stand in for (not set / mute)."""
+        t = (a.get("type") or "").lower()
+        if t == "volume":
+            return (a.get("volume") or "").lower() in ("up", "down")
+        if t == "brightness":
+            return (a.get("mode") or "set").lower() in ("up", "down") or "delta" in a
+        if t == "monitor":
+            return (a.get("monitor") or "up").lower() in ("up", "down")
+        return False
+
+    def slider_info(self, enc: str):
+        """(slider, kind, monitor index) for encoder 'enc0'..'enc2' on the CURRENT page:
+        'abs' = both turn directions nudge one value Hexpad can read AND set (dock brightness, system
+        volume, the same monitor(s)); 'jog' = any other turn binding; '' = none. Binding lookups only
+        (cheap, any thread)."""
+        def act(iid):
+            b = self._binding_for(iid)
+            a = b.get("action") if isinstance(b, dict) else None
+            return a if isinstance(a, dict) and (a.get("type") or "none") not in ("none", "") else None
+        right, left = act(enc + "+"), act(enc + "-")
+        if right is None and left is None:
+            return "", "", None
+        kind = str((right or left).get("type") or "").lower()
+        if (right is None or left is None or kind not in _ABS_KINDS
+                or str(left.get("type") or "").lower() != kind
+                or not (self._turn_relative(right) and self._turn_relative(left))):
+            return "jog", kind, None
+        if kind == "monitor":
+            idx = ActionEngine.monitor_index(right)
+            if ActionEngine.monitor_index(left) != idx:
+                return "jog", kind, None              # + and - drive different monitors
+            return "abs", kind, idx
+        return "abs", kind, None
+
+    def slider_values(self, sliders: Dict[str, tuple]) -> Dict[str, dict]:
+        """{'enc1': {'v': 0.42, 'muted': False}, ..} for the 'abs' encoders of `sliders` ({enc:
+        slider_info}), read from CACHES only (config, the last system-volume reading, the monitor
+        dimmer's set-point); v None = unknown. Never touches a device: safe on the Qt thread."""
+        out: Dict[str, dict] = {}
+        for e, (slider, kind, idx) in sliders.items():
+            if slider != "abs":
+                continue
+            if kind == "brightness":
+                out[e] = {"v": round(self.config.brightness / 100.0, 2)}
+            elif kind == "volume":
+                from . import actions
+                last = actions.sysvol_last()
+                out[e] = {"v": None if last is None else round(last[0] / 100.0, 2),
+                          "muted": bool(last and last[1])}
+            elif kind == "monitor":
+                from . import monitors
+                cur = self.engine.monitor_value(idx)
+                out[e] = {"v": None if cur is None else round(max(0.0, min(100.0, cur)) / 100.0, 2),
+                          "off": bool(monitors.is_off() or monitors.is_busy())}
+        return out
+
+    def _apply_set(self, i: int, kind: str, v: float, final: bool) -> bool:
+        """Loop thread: one slider value. Every setter here returns at once (an attribute + the
+        next pass's HID write; the ordered system-volume thread; the monitor dimmer worker)."""
+        slider, cur, idx = self.slider_info(f"enc{i}")
+        if slider != "abs" or cur != kind:
+            return False                               # the binding changed under the drag -> drop
+        if kind == "monitor":
+            from . import monitors
+            if monitors.is_off() or monitors.is_busy():
+                return False                           # a set would re-light switched-off monitors
+        pct = int(round(v * 100))
+        self._last_input = time.time()
+        if self._ambient is not None:
+            self._wake_ambient()                       # wake AND apply: a set is not swallowed
+        if kind == "brightness":
+            if self._display_on:
+                self.set_brightness_live(pct)
+            else:
+                self.config.brightness = pct           # the screen-on path applies it
+            if final:
+                self._save_brightness()
+            else:
+                self._bright_save_at = time.time()
+        elif kind == "volume":
+            self.engine.set_system_volume(pct)
+        else:
+            self.engine.set_monitor_brightness(pct, idx, quiet=True)
+        return True
+
+    def _save_brightness(self) -> None:
+        self._bright_save_at = 0.0
+        try:
+            self.config.save()
+        except Exception as e:
+            _log_error("save brightness", e)
+
+    def set_mirror_hi(self, on: bool) -> None:
+        """A client wants (or no client wants any more) sharp 2x faces. Any thread; the loop applies
+        it (_apply_mirror_hi)."""
+        self._mirror_hi_req = bool(on)
+
+    def _apply_mirror_hi(self, on: bool) -> None:
+        """Loop thread: start/stop the 2x copies. Turning on re-pushes what the keys show, so the
+        copies exist at once (the dock gets the same pictures again; cached faces = same bytes)."""
+        self._mirror_hi = on
+        _images.set_mirror_hi(on)
+        self.dock.mirror_hi = on
+        if not on:
+            _images.drop_mirror_hi()                   # free the copies the cached faces carry
+            return
+        if not self._calib:                            # never draw the page over a calib preview
+            self._render_requested = True
+        self._live_sig.clear()
+        if self._ambient is not None:                  # re-push all six idle tiles, not just changes
+            self._ambient["pushed"] = None
+            self._ambient["sig"] = None
 
     def _try_connect(self) -> bool:
         try:
@@ -571,6 +745,9 @@ class DockController:
             return False
 
     def _service_requests(self) -> None:
+        want = self._mirror_hi_req                 # before the idle-screen early return below
+        if want != self._mirror_hi or want != _images.mirror_hi():   # (a restarted loop thread too)
+            self._apply_mirror_hi(want)
         if self._reload_requested:
             self._reload_requested = False
             with self._lock:
@@ -1376,7 +1553,9 @@ class DockController:
                 return
         if ev.kind == "encoder_turn":              # turns fire immediately (with acceleration)
             binding = self._binding_for(ev.input_id)
-            mult = self._encoder_accel(ev.index)
+            # A remote (VR) turn is never accelerated and leaves the knob's timing alone: remote
+            # turns are drained in batches per loop pass, so their gaps say nothing about speed.
+            mult = 1 if getattr(ev, "remote", False) else self._encoder_accel(ev.index)
             if binding and mult > 1:
                 binding = {**binding, "action": self._scale_step(binding.get("action"), mult)}
             if binding:
