@@ -28,7 +28,16 @@ def _bg_loop():
 
 
 def _run(coro, timeout: float = 20.0):
-    return asyncio.run_coroutine_threadsafe(coro, _bg_loop()).result(timeout=timeout)
+    fut = asyncio.run_coroutine_threadsafe(coro, _bg_loop())
+    try:
+        return fut.result(timeout=timeout)
+    except BaseException:
+        # .result(timeout) does NOT stop the coroutine. Without this cancel an unreachable bulb
+        # keeps the task queued on tapo-loop holding kasa's per-device _query_lock (~23 s of
+        # retries), while the 1.5 s sampler enqueues another - the backlog grows without bound
+        # and every key press then waits behind it.
+        fut.cancel()
+        raise
 
 
 async def _connect(host: str, user: str, pw: str):
@@ -134,7 +143,13 @@ def is_on(host: str, user: str, pw: str, timeout: float = 5.0) -> bool:
     # Short timeout (not _run's 20s default): the LIGHT live-key sampler polls this every ~1.5s,
     # so a bulb that drops off the network must not freeze the live face for 20s per tick.
     dev = _get_dev(host, user, pw, timeout=timeout)
-    _run(dev.update(), timeout=timeout)
+    try:
+        _run(dev.update(), timeout=timeout)
+    except Exception:
+        with _dev_lock:                       # a cancelled query can leave the transport
+            if _devices.get(host) is dev:     # half-open: drop it so the next poll reconnects
+                del _devices[host]            # instead of piling onto a stuck device
+        raise
     return bool(dev.is_on)
 
 

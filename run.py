@@ -35,5 +35,7 @@ if __name__ == "__main__":
         live.lhm_worker_main(out, ppid)
         sys.exit(0)
 
+    from dock import config as _config
+    _config.use_live_config()     # this process IS the app -> it may read/write the real config
     from dock.gui import main
     main()

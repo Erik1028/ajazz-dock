@@ -285,7 +285,9 @@ class _ObsVolume:
         def work():
             try:
                 from . import obs
-                self._muted[inp] = obs.toggle_input_mute(inp)
+                mu = obs.toggle_input_mute(inp)
+                if mu is not None:        # None = OBS did not answer; keep the last state
+                    self._muted[inp] = mu
                 if inp not in self._mul:
                     m = obs.input_volume_mul(inp)
                     if m is not None:
@@ -310,11 +312,19 @@ class _ObsVolume:
                     cur = self._mul.get(inp)
                     if cur is None:
                         cur = obs.input_volume_mul(inp)
-                        cur = 1.0 if cur is None else cur
-                        self._muted[inp] = obs.input_muted(inp)
+                        if cur is None:
+                            # None means "OBS did not answer" just as much as "no such
+                            # input" — assuming unity here slams a live source to ~95%.
+                            # Drop this detent and re-read on the next one instead.
+                            continue
+                        mu = obs.input_muted(inp)
+                        if mu is not None:
+                            self._muted[inp] = mu
                     nv = max(0.0, min(1.0, cur + dp / 100.0))
+                    if obs.set_input_volume_mul(inp, nv) is False:
+                        self._mul.pop(inp, None)   # refused -> our set-point would drift
+                        continue
                     self._mul[inp] = nv
-                    obs.set_input_volume_mul(inp, nv)
                     self._hud(inp)
             except Exception as e:
                 print(f"[obs-vol] {e}")
@@ -787,6 +797,8 @@ class ActionEngine:
         self._rgb_hue_est = None         # local hue estimate (Prisma can't report colour) for the HUD
         self._tapo_notify_set = False    # registered the bulb bri/hue HUD callback yet?
         self._work_q = None              # lazily-created queue for the off-loop action worker
+        self._sv_ev = threading.Event()  # system-volume HUD reader: one thread, readings in order
+        self._sv_thread = None
 
     # Actions that touch controller navigation state, or hold a thread-bound COM object, or already
     # self-thread, run INLINE (on the device loop thread). Everything else — blocking keyboard /
@@ -794,7 +806,8 @@ class ActionEngine:
     # a keystroke simulation (keeps presses/turns snappy). mic/monitor stay inline (COM is bound to
     # the thread that created it); macro stays inline (it may contain navigation sub-steps).
     _INLINE = frozenset({"open", "page", "folder", "profile", "brightness", "sound",
-                         "smartlight", "appvolume", "rgbscene", "obs", "mic", "monitor", "macro"})
+                         "smartlight", "appvolume", "rgbscene", "obs", "mic", "monitor", "macro",
+                         "vrchat", "monpower"})
 
     def execute(self, action: Optional[Dict[str, Any]]) -> None:
         if not action:
@@ -880,6 +893,8 @@ class ActionEngine:
             self._system((action.get("system") or "lock").lower())
         elif t == "monitor":
             self._monitor(action)
+        elif t == "monpower":
+            self._monpower((action.get("mode") or "toggle").lower())
         elif t == "sound":
             from . import sound
             if (action.get("mode") or "play").lower() == "stop":
@@ -919,6 +934,8 @@ class ActionEngine:
             self._appvolume(action)
         elif t == "obs":
             self._obs(action)
+        elif t == "vrchat":
+            self._vrchat(action)
         elif t == "timer":
             pass          # stateful: handled by the controller (needs the per-key identity + face)
         elif t == "toggle":
@@ -1044,6 +1061,60 @@ class ActionEngine:
                     except Exception:
                         pass
 
+    def _vrchat(self, action: Dict[str, Any]) -> None:
+        """VRChat over OSC: flip/set/pulse/cycle an avatar parameter, post to the chatbox, or press a
+        VRChat input button. Sends are non-blocking UDP, so this is safe inline on the device loop.
+
+        `toggle` uses the cached state the OSC listener maintains, so a key mirrors what the avatar is
+        actually wearing; `pulse` is how a bool-triggered emote is fired (set, then reset after hold).
+        """
+        from . import vrcosc
+        vrcosc.start()                      # the listener also feeds the live tiles + toggle state
+        mode = (action.get("mode") or "toggle").lower()
+        name = str(action.get("param") or "").strip()
+        vtype = (action.get("vtype") or "bool").lower()
+
+        def _coerce(v):
+            try:
+                if vtype == "int":
+                    return int(float(v))
+                if vtype == "float":
+                    return float(v)
+            except (TypeError, ValueError):
+                return 0 if vtype == "int" else 0.0
+            if isinstance(v, str):
+                return v.strip().lower() in ("1", "true", "on", "yes")
+            return bool(v)
+
+        if mode == "chatbox":
+            vrcosc.send_chatbox(action.get("text", ""), immediate=not action.get("keyboard"),
+                                sfx=bool(action.get("sfx")))
+        elif mode == "input":
+            # buttons are int 1 (down) then 0 (up), and must return to 0 before they can fire
+            # again — pulse_input owns the release so mashing cannot eat presses
+            vrcosc.pulse_input(str(action.get("input") or "Jump"),
+                               max(10, int(action.get("hold", 120) or 120)))
+        elif not name:
+            return                          # every parameter mode needs a parameter name
+        elif mode == "toggle":
+            vrcosc.toggle_param(name)
+        elif mode == "pulse":
+            vrcosc.pulse_param(name, int(action.get("hold", 150) or 150),
+                               value=_coerce(action.get("value", True)))
+        elif mode == "cycle":
+            vals = action.get("values")
+            if isinstance(vals, str):
+                vals = [v.strip() for v in vals.split(",") if v.strip()]
+            vrcosc.cycle_param(name, [_coerce(v) for v in (vals or [])])
+        else:                               # "set"
+            vrcosc.cancel_pulse(name)       # an in-flight pulse OFF must not undo this write
+            vrcosc.send_param(name, _coerce(action.get("value", True)))
+        if self.controller is not None and hasattr(self.controller, "refresh_live"):
+            try:
+                self.controller.refresh_live()   # optimistic: the key face updates immediately
+            except Exception:
+                pass
+
     def _hud(self, value, name, *, muted=False, accent=None, relative=0, unit="%", vmax=100):
         c = self.controller
         if c is not None and hasattr(c, "show_value_hud"):
@@ -1054,16 +1125,33 @@ class ActionEngine:
                 pass
 
     def _system_volume_hud(self):
-        """Read the (just-changed) system output level off-thread and pop a bar HUD."""
+        """Read the (just-changed) system output level off-thread and pop the knob HUD.
+
+        ONE reader thread, woken per detent. It used to be a new thread per detent: on a fast spin
+        those raced each other and delivered their readings OUT OF ORDER (40, 44, 42, 48, 46 ...),
+        so the HUD's number and ladder jumped back and forth and its direction chevrons flipped -
+        the 'bouncy' look Erik reported. A single thread reads in time order (so a spin up only
+        ever reads higher), and detents landing during the settle delay coalesce into one read."""
         if self.controller is None or not hasattr(self.controller, "show_value_hud"):
             return
-        def work():
+        if self._sv_thread is None or not self._sv_thread.is_alive():
+            self._sv_thread = threading.Thread(target=self._sysvol_hud_loop, name="sysvol-hud",
+                                               daemon=True)
+            self._sv_thread.start()
+        self._sv_ev.set()
+
+    def _sysvol_hud_loop(self):
+        while True:
+            self._sv_ev.wait()
+            self._sv_ev.clear()
             time.sleep(0.05)                      # let the media key settle
-            r = _system_volume()
+            try:
+                r = _system_volume()
+            except Exception:
+                r = None
             if r is not None:
                 pct, muted = r
                 self._hud(pct, "Volume", muted=muted)
-        threading.Thread(target=work, name="sysvol-hud", daemon=True).start()
 
     def _bulb_hud(self, kind, value):
         """tapo callback (its bg loop): show the bulb's true brightness % / colour hue°."""
@@ -1095,6 +1183,25 @@ class ActionEngine:
         else:
             self._mon_dimmer.bump(step, idx)
         # the dimmer thread reads the true brightness after applying and pops the HUD itself
+
+    _monpower_gate = threading.Lock()
+
+    def _monpower(self, mode: str) -> None:
+        """PC monitors off / on / toggle (monitors.power_*). DDC takes 1-3 s, so it runs on its own
+        thread; a press while a switch is still running is ignored (no off-on ping-pong)."""
+        from . import monitors
+        if not self._monpower_gate.acquire(blocking=False):
+            return
+        fn = {"off": monitors.power_off, "on": monitors.power_on}.get(mode, monitors.power_toggle)
+
+        def run():
+            try:
+                print(f"[monpower] {mode}: {fn()}")
+            except Exception as e:
+                print(f"[monpower] {mode} failed: {e}")
+            finally:
+                self._monpower_gate.release()
+        threading.Thread(target=run, name="monitor-power", daemon=True).start()
 
     # ------------------------------------------------------------------
     def _open(self, action: Dict[str, Any]) -> None:

@@ -55,6 +55,10 @@ _META: Dict[str, Tuple[str, str]] = {
     "caps":      ("Caps Lock state", "state"),
     "light":     ("Smart bulb on/off", "state"),
     "rgb":       ("RGB lights on/off", "state"),
+    "monitors":  ("PC monitors on/off", "state"),
+    "vrc":       ("VRChat — connected / avatar", "state"),
+    "vrc_mute":  ("VRChat mic mute (MuteSelf)", "state"),
+    "vrc_afk":   ("VRChat AFK", "state"),
     "discord":   ("Discord mute / deafen", "state"),
     "discord_mic": ("Discord mic mute", "state"),
     "discord_deaf": ("Discord deafen", "state"),
@@ -98,7 +102,9 @@ LIVE_SHORT: Dict[str, str] = {
     "disk": "Disk", "net": "Net down", "net_up": "Net up", "ping": "Ping",
     "battery": "Battery", "uptime": "Uptime", "procs": "Processes",
     "mic": "Mic", "caps": "Caps Lock", "light": "Smart bulb", "rgb": "RGB lights",
+    "monitors": "Monitors",
     "discord": "Discord", "media": "Now playing",
+    "vrc": "VRChat", "vrc_mute": "VRC mic", "vrc_afk": "VRC AFK",
     "weather": "Weather",
     "wx_feels": "Feels like", "wx_humidity": "Humidity", "wx_wind": "Wind", "wx_uv": "UV index",
     "wx_precip": "Rain chance", "wx_hi": "Today high", "wx_lo": "Today low",
@@ -121,6 +127,8 @@ LIVE_EMOJI: Dict[str, str] = {
     "disk": "💽", "net": "🔽", "net_up": "🔼", "ping": "📶",
     "battery": "🔋", "uptime": "⏳", "procs": "🔢",
     "mic": "🎙️", "caps": "🔠", "light": "💡", "rgb": "🌈", "discord": "💬", "media": "🎵",
+    "monitors": "🖥️",
+    "vrc": "🥽", "vrc_mute": "🔇", "vrc_afk": "💤",
     "discord_mic": "🎙️", "discord_deaf": "🎧", "discord_voice": "📞", "discord_count": "👥",
     "discord_invol": "🎚️", "discord_outvol": "🔊", "discord_mode": "🎯", "discord_noise": "🛡️",
     "obs_streaming": "🔴", "obs_recording": "⏺️", "obs_virtualcam": "📹", "obs_scene": "🎬", "obs_replay": "⏮️",
@@ -136,11 +144,12 @@ LIVE_CATEGORIES = [
     ("Graphics", ["gpu", "gpu_clock", "gpu_temp", "vram", "vram_temp", "gpu_fan"]),
     ("Storage & network", ["disk", "net", "net_up", "ping"]),
     ("Power & system", ["battery", "uptime", "procs"]),
-    ("Status", ["mic", "caps", "light", "rgb"]),
+    ("Status", ["mic", "caps", "light", "rgb", "monitors"]),
     ("Discord", ["discord", "discord_mic", "discord_deaf", "discord_voice", "discord_count",
                  "discord_invol", "discord_outvol", "discord_mode", "discord_noise"]),
     ("OBS Studio", ["obs_streaming", "obs_recording", "obs_virtualcam", "obs_scene", "obs_replay"]),
     ("Media", ["media"]),
+    ("VRChat", ["vrc", "vrc_mute", "vrc_afk"]),
     ("Weather — now", ["weather", "wx_feels", "wx_humidity", "wx_wind", "wx_uv", "wx_precip"]),
     ("Weather — today", ["wx_hi", "wx_lo", "wx_sunrise", "wx_sunset"]),
     ("Weather — 6-day forecast", ["wx_d1", "wx_d2", "wx_d3", "wx_d4", "wx_d5", "wx_d6"]),
@@ -215,6 +224,12 @@ def _net() -> Tuple[str, str, Optional[float]]:
 # and wakes instantly on the next read. So switching to a page with no live key, turning the screen
 # off, disconnecting, or hiding the GUI all let the samplers go quiet within ~5s.
 _IDLE_GRACE = 5.0
+# The "lhm" group is backed by a CHILD PROCESS, not a thread: parking it TERMINATES it, and
+# waking it costs a process spawn + pythonnet CLR init + 5 assembly loads + Computer.Open()
+# (~0.4-1.4 s), during which every GPU/temp tile reads "--". A 5 s grace tuned for in-process
+# samplers therefore rebuilt the worker on every page flip, folder visit or volume HUD. Short
+# gaps now keep it; a genuinely idle dock still kills it and goes quiet.
+_GROUP_GRACE = {"lhm": 90.0}
 _last_read: Dict[str, float] = {}
 _wake: Dict[str, "threading.Event"] = {}
 
@@ -237,7 +252,7 @@ def _park_if_idle(group: str) -> None:
     ev = _wake.get(group)
     if ev is None:
         return
-    if time.monotonic() - _last_read.get(group, 0.0) > _IDLE_GRACE:
+    if time.monotonic() - _last_read.get(group, 0.0) > _GROUP_GRACE.get(group, _IDLE_GRACE):
         ev.clear()
         ev.wait()                       # block here at zero cost until a reader calls _touch()
 
@@ -435,7 +450,7 @@ def _start_lhm() -> None:
         import json
         backoff = 0.0
         while not _lhm_shutdown:
-            if time.monotonic() - _last_read.get("lhm", 0.0) > _IDLE_GRACE:
+            if time.monotonic() - _last_read.get("lhm", 0.0) > _GROUP_GRACE["lhm"]:
                 _lhm_kill()                   # no GPU/temp key -> stop sweeping
                 with _lhm_lock:
                     for k in _lhm:
@@ -651,6 +666,15 @@ def _caps() -> Tuple[str, str, Optional[float]]:
         return ("ON" if on else "OFF"), "CAPS", (1.0 if on else 0.0)
     except Exception:
         return "--", "CAPS", None
+
+
+def _monitors_state() -> Tuple[str, str, Optional[float]]:
+    """PC monitors switched on/off by the 'monpower' action (state is the app's own, persisted)."""
+    from . import monitors
+    off = monitors.is_off()
+    if monitors.is_busy():
+        return "…", "SCREENS", (0.0 if off else 1.0)
+    return ("OFF" if off else "ON"), "SCREENS", (0.0 if off else 1.0)
 
 
 # ---- internet latency ("ping") — TCP connect timing, no ICMP/raw sockets needed ----------------
@@ -1626,6 +1650,61 @@ def _wx_day(n: int) -> Tuple[str, str, Optional[float]]:
     return hit, f"{dow}|{lot}|{_wmo_short(code).lower()}", None
 
 
+# ---- VRChat OSC ------------------------------------------------------------------------------
+# Live tiles read ONLY the vrcosc cache (a background UDP listener fills it), so a dock tick never
+# touches the network. A parameter tile uses the pseudo-source "vrc:<ParamName>" — see value().
+VRC_PREFIX = "vrc:"
+
+
+def _vrc_fmt(v):
+    """(text, frac) for a parameter value: bools as ON/OFF, ints plain, floats trimmed."""
+    if v is None:
+        return "--", None
+    if isinstance(v, bool):
+        return ("ON" if v else "OFF"), (1.0 if v else 0.0)
+    if isinstance(v, int):
+        return str(v), None
+    if isinstance(v, float):
+        return (f"{v:.2f}".rstrip("0").rstrip(".") or "0"), max(0.0, min(1.0, v))
+    return str(v)[:8], None
+
+
+def _vrc_param(name: str) -> Tuple[str, str, Optional[float]]:
+    from . import vrcosc
+    vrcosc.start()
+    text, frac = _vrc_fmt(vrcosc.get_param(name))
+    cap = (name.split("/")[-1] or "VRC")[:9].upper()
+    return text, cap, frac
+
+
+def _vrc_conn() -> Tuple[str, str, Optional[float]]:
+    from . import vrcosc
+    vrcosc.start()
+    st = vrcosc.status()
+    if not st["connected"]:
+        return "OFF", "VRCHAT", 0.0
+    nm = st.get("avatar_name") or "ON"
+    return str(nm)[:9], "VRCHAT", 1.0
+
+
+def _vrc_mute() -> Tuple[str, str, Optional[float]]:
+    from . import vrcosc
+    vrcosc.start()
+    v = vrcosc.get_param("MuteSelf")
+    if v is None:
+        return "--", "VRC MIC", None
+    return ("MUTED" if v else "LIVE"), "VRC MIC", (1.0 if v else 0.0)
+
+
+def _vrc_afk() -> Tuple[str, str, Optional[float]]:
+    from . import vrcosc
+    vrcosc.start()
+    v = vrcosc.get_param("AFK")
+    if v is None:
+        return "--", "VRC AFK", None
+    return ("AFK" if v else "HERE"), "VRC AFK", (1.0 if v else 0.0)
+
+
 _PROVIDERS: Dict[str, Callable[[], Tuple[str, str, Optional[float]]]] = {
     "clock": _clock, "clock_sec": _clock_sec, "date": _date, "cpu": _cpu, "ram": _ram,
     "gpu": _gpu, "cpu_temp": _cpu_temp, "gpu_temp": _gpu_temp,
@@ -1634,6 +1713,7 @@ _PROVIDERS: Dict[str, Callable[[], Tuple[str, str, Optional[float]]]] = {
     "disk": _disk, "battery": _battery, "net": _net, "net_up": _net_up,
     "uptime": _uptime, "procs": _procs,
     "mic": _mic, "caps": _caps, "light": _light, "rgb": _rgb_state, "ping": _ping,
+    "monitors": _monitors_state,
     "discord": _discord_src,
     "discord_mic": _discord_mic, "discord_deaf": _discord_deaf,
     "discord_voice": _discord_voice, "discord_count": _discord_count,
@@ -1642,6 +1722,7 @@ _PROVIDERS: Dict[str, Callable[[], Tuple[str, str, Optional[float]]]] = {
     "obs_streaming": _obs_streaming, "obs_recording": _obs_recording,
     "obs_virtualcam": _obs_virtualcam, "obs_scene": _obs_scene, "obs_replay": _obs_replay,
     "media": _media_now,
+    "vrc": _vrc_conn, "vrc_mute": _vrc_mute, "vrc_afk": _vrc_afk,
     "weather": _weather,
     "wx_feels": _wx_feels, "wx_humidity": _wx_humidity, "wx_wind": _wx_wind,
     "wx_uv": _wx_uv, "wx_precip": _wx_precip, "wx_hi": _wx_hi, "wx_lo": _wx_lo,
@@ -1652,11 +1733,15 @@ _PROVIDERS: Dict[str, Callable[[], Tuple[str, str, Optional[float]]]] = {
 
 
 def source_label(source: str) -> str:
+    if source.startswith(VRC_PREFIX):
+        return "VRChat · " + source[len(VRC_PREFIX):]
     m = _META.get(source)
     return m[0] if m else source
 
 
 def source_kind(source: str) -> str:
+    if source.startswith(VRC_PREFIX):
+        return "state"
     m = _META.get(source)
     return m[1] if m else "gauge"
 
@@ -1693,6 +1778,12 @@ def history(source: str) -> List[float]:
 
 def value(source: str) -> Tuple[str, str, Optional[float], str]:
     """Return (text, caption, frac, kind) for a live source id."""
+    if source.startswith(VRC_PREFIX):          # "vrc:<ParamName>" -> any avatar parameter
+        try:
+            text, caption, frac = _vrc_param(source[len(VRC_PREFIX):])
+            return text, caption, frac, "state"
+        except Exception:
+            return "--", "VRC", None, "state"
     fn = _PROVIDERS.get(source)
     kind = source_kind(source)
     if not fn:

@@ -159,7 +159,7 @@ _ACTION_FLUENT = {
     "hotkey": "keyboard", "sound": "volume", "monitor": "screen", "obs": "record",
     "discord": "chat", "system": "power", "appvolume": "volume", "rgbhue": "light",
     "media": "play", "volume": "volume", "text": "keyboard", "quick": "bolt",
-    "toggle": "refresh", "http": "globe", "timer": "timer",
+    "toggle": "refresh", "http": "globe", "timer": "timer", "monpower": "screen",
 }
 
 
@@ -1056,11 +1056,22 @@ def _glyph_obs_replay(d, cx, cy, s, on, lw):
         d.line([(cx + dx - s * 0.2, cy), (cx + dx + s * 0.55, cy + s * 0.8)], fill=col, width=lw)
 
 
+def _glyph_screens(d, cx, cy, s, on, lw):
+    """PC monitors — a screen on a stand; lit mint screen when on, grey outline + cut slash when off."""
+    col = _ON if on else _OFFCOL
+    d.rounded_rectangle([cx - s * 1.3, cy - s * 1.0, cx + s * 1.3, cy + s * 0.6],
+                        radius=s * 0.18, outline=col, width=lw, fill=(col if on else None))
+    d.line([(cx, cy + s * 0.6), (cx, cy + s * 1.05)], fill=col, width=lw)             # neck
+    d.line([(cx - s * 0.6, cy + s * 1.1), (cx + s * 0.6, cy + s * 1.1)], fill=col, width=lw)
+    if not on:
+        _cut_slash(d, (cx - s * 1.4, cy - s * 1.3), (cx + s * 1.4, cy + s * 1.3), col, lw)
+
+
 _STATE_GLYPHS = {"MIC": _glyph_mic, "CAPS": _glyph_caps, "LIGHT": _glyph_bulb, "RGB": _glyph_rgb,
                  "DISCORD": _glyph_discord, "DMIC": _glyph_mic, "DDEAF": _glyph_deaf,
                  "DCALL": _glyph_call, "DMODE": _glyph_dmode, "DNOISE": _glyph_dnoise,
                  "STREAM": _glyph_obs_stream, "REC": _glyph_obs_rec,
-                 "V-CAM": _glyph_obs_cam, "REPLAY": _glyph_obs_replay}
+                 "V-CAM": _glyph_obs_cam, "REPLAY": _glyph_obs_replay, "SCREENS": _glyph_screens}
 _MEDIA_BG_CACHE: dict = {}      # 1-entry cache of the scrimmed cover-art background (marquee reuse)
 LIVE_STYLE_ORDER = ["gauge", "ring", "bar", "dial", "card", "graph", "minimal"]
 LIVE_STYLE_LABELS = {"gauge": "Gauge", "ring": "Ring", "bar": "Bar", "dial": "Dial",
@@ -2367,6 +2378,15 @@ def _str_hue(s: str) -> float:
     return (v % 360) / 360.0
 
 
+@lru_cache(maxsize=4)
+def _np_tint(W: int, H: int, hue: float) -> Image.Image:
+    """The backdrop's title-tinted gradient. It depends only on the title, so it is built once per
+    track rather than 15 times a second. Callers must not draw on it — copy first."""
+    top = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue, 0.55, 0.34))
+    bot = tuple(int(c * 255) for c in colorsys.hsv_to_rgb((hue + 0.07) % 1.0, 0.9, 0.05))
+    return _vgrad(W, H, top, bot).convert("RGB")
+
+
 def _now_playing_backdrop(W, H, phase, title):
     """Cover-less now-playing backdrop: a title-tinted gradient with a glowing equalizer that
     dances to a pseudo-beat — far nicer than a flat purple wash when a browser gives no art."""
@@ -2374,10 +2394,11 @@ def _now_playing_backdrop(W, H, phase, title):
     S = 2
     top_row = kh * S                                    # the equalizer lives WHOLLY in the top row
     hue = _str_hue(title)
-    top = tuple(int(c * 255) for c in colorsys.hsv_to_rgb(hue, 0.55, 0.34))
-    bot = tuple(int(c * 255) for c in colorsys.hsv_to_rgb((hue + 0.07) % 1.0, 0.9, 0.05))
-    canvas = _vgrad(W, H, top, bot).convert("RGB")
-    bars = Image.new("RGB", (W, H), (0, 0, 0))          # bars on black -> additive neon glow
+    canvas = _np_tint(W, H, hue)
+    # The bars (and their bloom) never reach below the top row, so build and blur them in a band
+    # that size instead of over the whole canvas — same pixels, about half the work per frame.
+    band = min(H, top_row + 32)                         # + margin so the blur is not clipped
+    bars = Image.new("RGB", (W, band), (0, 0, 0))       # bars on black -> additive neon glow
     bd = ImageDraw.Draw(bars)
     n = 13
     x0, x1 = int(W * 0.06), int(W * 0.94)
@@ -2394,7 +2415,104 @@ def _now_playing_backdrop(W, H, phase, title):
         bd.rounded_rectangle([bx, baseline - bh, bx2, baseline],
                              radius=max(2, int(bwid * 0.2)), fill=barcol)
     bars = ImageChops.add(bars, bars.filter(ImageFilter.GaussianBlur(3)))   # bloom
-    return ImageChops.add(canvas, bars)
+    out = canvas.copy()
+    out.paste(ImageChops.add(canvas.crop((0, 0, W, band)), bars), (0, 0))
+    return out
+
+
+# ---- now-playing idle layer -------------------------------------------------------------------
+# This layer is the app's whole idle CPU budget: it runs at ~15 fps for as long as music plays, and
+# music plays for hours. So everything that does NOT change between frames — the LANCZOS-resampled
+# cover, the dark veil, the play/pause pip, the bottom scrim — is baked ONCE into a cached base, and
+# a frame is a memcpy of that base plus the ticker text and the progress bar. `now_playing_sig()`
+# goes further and lets the caller skip the render entirely when neither of those two moved.
+_NP_BASE: dict = {"key": None, "img": None, "art": None}
+
+
+def _np_title(title, artist) -> str:
+    """The ticker string: 'Title · Artist', or just the title when the artist adds nothing."""
+    title = (title or "--").strip()
+    if artist and artist not in ("MEDIA", "--") and artist.lower() not in title.lower():
+        return f"{title}   ·   {artist}"
+    return title
+
+
+@lru_cache(maxsize=8)
+def _np_metrics(text: str, band_h: int, W: int):
+    """(width, fits?, scroll span) for the ticker — measured once per track, not once per frame."""
+    tf = _font(int(band_h * 0.46), bold=True)
+    tw = int(ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength(text, font=tf))
+    avail = int(W * 0.92)
+    return tw, tw <= avail, tw + int(W * 0.34)
+
+
+def _np_scroll(phase: float, span: int, W: int, H: int) -> int:
+    """Left edge of the scrolling ticker — one full title plus a gap, seamless."""
+    return int(W * 0.02) - int((phase * H * 0.11) % span)
+
+
+@lru_cache(maxsize=4)
+def _np_overlay(W: int, H: int, band_h: int, playing: bool) -> Image.Image:
+    """The static chrome over any backdrop: the play/pause pip in its translucent disc, plus the
+    bottom scrim the title sits on. One cached RGBA layer -> one composite per frame."""
+    ov = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ov)
+    pr = int(H * 0.055)
+    pcx, pcy = int(W * 0.075), int(H * 0.11)
+    d.ellipse([pcx - pr, pcy - pr, pcx + pr, pcy + pr], fill=(255, 255, 255, 46))
+    if playing:                                          # play triangle
+        t = pr * 0.5
+        d.polygon([(pcx - t * 0.7, pcy - t), (pcx - t * 0.7, pcy + t), (pcx + t, pcy)],
+                  fill=(255, 255, 255, 255))
+    else:                                                # pause bars
+        bw2, bh2 = int(pr * 0.22), int(pr * 0.62)
+        d.rectangle([pcx - int(pr * 0.42), pcy - bh2, pcx - int(pr * 0.42) + bw2, pcy + bh2],
+                    fill=(255, 255, 255, 255))
+        d.rectangle([pcx + int(pr * 0.20), pcy - bh2, pcx + int(pr * 0.20) + bw2, pcy + bh2],
+                    fill=(255, 255, 255, 255))
+    gm = Image.linear_gradient("L").resize((W, band_h)).transpose(Image.FLIP_TOP_BOTTOM)
+    scrim = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
+    scrim.putalpha(gm.point(lambda a: int(a * 0.80)))    # dark enough that the title pops on any art
+    ov.alpha_composite(scrim, (0, H - band_h))
+    return ov
+
+
+def _np_base(art, W: int, H: int, band_h: int, playing: bool) -> Image.Image:
+    """The unchanging part of a cover frame (fitted cover + veil + chrome), baked once per track.
+    Keyed on the art object's identity — the artwork reference is held in the cache so the id()
+    cannot be recycled onto a different image."""
+    key = (id(art), art.size, W, H, band_h, playing)
+    if _NP_BASE["key"] == key and _NP_BASE["img"] is not None:
+        return _NP_BASE["img"]
+    cover = ImageOps.fit(art.convert("RGB"), (W, H), Image.LANCZOS, centering=(0.5, 0.42))
+    canvas = Image.alpha_composite(cover.convert("RGBA"), Image.new("RGBA", (W, H), (0, 0, 0, 55)))
+    canvas.alpha_composite(_np_overlay(W, H, band_h, playing))
+    img = canvas.convert("RGB")
+    _NP_BASE.update(key=key, img=img, art=art)
+    return img
+
+
+def _np_geom():
+    """Canvas geometry shared by the renderer and the signature, so the two cannot drift."""
+    w, h = _ambient_canvas()
+    kw, kh = KEY_SIZE
+    S = 2
+    return S, kw, kh, w * S, h * S, int(kh * S * 0.52)
+
+
+def now_playing_sig(title, artist, art, phase, playing=True, pos=None):
+    """A cheap signature of what the next now-playing frame would LOOK like, computed without
+    rendering it. Returns None when the frame animates unconditionally (the cover-less equaliser
+    backdrop). With a cover, only the ticker offset and the progress-bar width can change, so a
+    track whose title fits redraws ~once instead of 15 times a second."""
+    if art is None or min(art.size) < 64:
+        return None                                      # equaliser backdrop -> always redraw
+    _S, _kw, _kh, W, H, band_h = _np_geom()
+    text = _np_title(title, artist)
+    _tw, fits, span = _np_metrics(text, band_h, W)
+    scroll = None if fits else _np_scroll(phase, span, W, H)
+    fillw = None if pos is None else int(W * max(0.0, min(1.0, float(pos))))
+    return (id(art), art.size, bool(playing), text, scroll, fillw)
 
 
 def ambient_now_playing_tiles(title, artist, art, phase, playing=True, pos=None):
@@ -2402,70 +2520,37 @@ def ambient_now_playing_tiles(title, artist, art, phase, playing=True, pos=None)
     veil, a play/pause pip in the corner, the title scrolling along the bottom row, and (when the
     media app reports a timeline) a thin neon progress bar along the very bottom. With no usable
     cover it falls back to a title-tinted equalizer backdrop instead of a flat wash."""
-    w, h = _ambient_canvas()
-    S = 2
-    kw, kh = KEY_SIZE
-    W, H = w * S, h * S
-    title = (title or "--").strip()
+    S, kw, kh, W, H, band_h = _np_geom()
     if art is not None and min(art.size) >= 64:         # a real cover -> show it big
-        cover = ImageOps.fit(art.convert("RGB"), (W, H), Image.LANCZOS, centering=(0.5, 0.42))
-        canvas = Image.alpha_composite(cover.convert("RGBA"),
-                                       Image.new("RGBA", (W, H), (0, 0, 0, 55))).convert("RGB")
+        canvas = _np_base(art, W, H, band_h, playing).copy()
     else:                                               # no/*tiny* cover -> the visualiser backdrop
-        canvas = _now_playing_backdrop(W, H, phase, title)
-    d = ImageDraw.Draw(canvas)
-    # play / pause pip, top-left, in a translucent disc
-    pr = int(H * 0.055)
-    pcx, pcy = int(W * 0.075), int(H * 0.11)
-    disc = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(disc).ellipse([pcx - pr, pcy - pr, pcx + pr, pcy + pr], fill=(255, 255, 255, 46))
-    canvas = Image.alpha_composite(canvas.convert("RGBA"), disc).convert("RGB")
-    d = ImageDraw.Draw(canvas)
-    if playing:                                          # ▶ triangle
-        t = pr * 0.5
-        d.polygon([(pcx - t * 0.7, pcy - t), (pcx - t * 0.7, pcy + t), (pcx + t, pcy)],
-                  fill=(255, 255, 255))
-    else:                                                # ❚❚ pause bars
-        bw2, bh2 = int(pr * 0.22), int(pr * 0.62)
-        d.rectangle([pcx - int(pr * 0.42), pcy - bh2, pcx - int(pr * 0.42) + bw2, pcy + bh2],
-                    fill=(255, 255, 255))
-        d.rectangle([pcx + int(pr * 0.20), pcy - bh2, pcx + int(pr * 0.20) + bw2, pcy + bh2],
-                    fill=(255, 255, 255))
+        canvas = _now_playing_backdrop(W, H, phase, (title or "--").strip()).convert("RGBA")
+        canvas.alpha_composite(_np_overlay(W, H, band_h, playing))
+        canvas = canvas.convert("RGB")
     # title ticker along a slim band at the very bottom (bezels break it into a retro ticker)
-    band_h = int(kh * S * 0.52)
-    by = H - band_h
-    grad = _vgrad(W, band_h, (0, 0, 0), (0, 0, 0))       # a bottom-anchored dark scrim
-    gm = Image.linear_gradient("L").resize((W, band_h)).transpose(Image.FLIP_TOP_BOTTOM)
-    scrim = Image.new("RGBA", (W, band_h), (0, 0, 0, 0))
-    scrim.putalpha(gm.point(lambda a: int(a * 0.80)))    # a touch darker -> title pops on any cover
-    canvas = canvas.convert("RGBA")
-    canvas.alpha_composite(scrim, (0, by))
-    canvas = canvas.convert("RGB")
     d = ImageDraw.Draw(canvas)
-    if artist and artist not in ("MEDIA", "--") and artist.lower() not in title.lower():
-        title = f"{title}   ·   {artist}"
+    text = _np_title(title, artist)
     tf = _font(int(band_h * 0.46), bold=True)
-    ty = by + int(band_h * 0.56)
-    tw = int(d.textlength(title, font=tf))
-    avail = int(W * 0.92)
-    if tw <= avail:
-        d.text((W // 2, ty), title, font=tf, anchor="mm", fill=(247, 249, 252))
+    ty = H - band_h + int(band_h * 0.56)
+    _tw, fits, span = _np_metrics(text, band_h, W)
+    if fits:
+        d.text((W // 2, ty), text, font=tf, anchor="mm", fill=(247, 249, 252))
     else:
-        span = tw + int(W * 0.34)                        # scroll one full title + a gap, seamless
-        base = int(W * 0.02) - int((phase * H * 0.11) % span)   # a little slower -> easier to read
+        base = _np_scroll(phase, span, W, H)             # a little slower -> easier to read
         for off in (base, base + span):
-            d.text((off, ty), title, font=tf, anchor="lm", fill=(247, 249, 252))
+            d.text((off, ty), text, font=tf, anchor="lm", fill=(247, 249, 252))
     if pos is not None:                                  # a thin neon progress bar near the bottom
         pf = max(0.0, min(1.0, float(pos)))
         bh = max(3, int(H * 0.014))
         margin = max(bh, int(H * 0.06))                  # OFF the absolute edge: the device EDGE_INSET
         y1 = H - margin                                  # + CONTENT_SHIFT(dy) eat the last rows
         y0 = y1 - bh
-        track = Image.new("RGBA", (W, bh), (255, 255, 255, 38))  # dim full-width track
-        canvas = canvas.convert("RGBA")
-        canvas.alpha_composite(track, (0, y0))
-        canvas = canvas.convert("RGB")
-        d = ImageDraw.Draw(canvas)
+        # dim full-width track: composite just the bar's own rows, not two conversions of the
+        # whole canvas (same pixels as compositing the full frame, ~120x less work)
+        box = (0, y0, W, y1)
+        strip = canvas.crop(box).convert("RGBA")
+        strip.alpha_composite(Image.new("RGBA", (W, bh), (255, 255, 255, 38)))
+        canvas.paste(strip.convert("RGB"), box)
         fillw = int(W * pf)
         if fillw > 0:
             d.rectangle([0, y0, fillw, y1], fill=(255, 92, 170))  # neon-pink played portion

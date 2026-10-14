@@ -22,6 +22,8 @@ import datetime
 import json
 import os
 import shutil
+import tempfile
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -46,9 +48,33 @@ def config_dir() -> str:
     return d
 
 
+# Only the real app may touch the user's config.json. Tests and one-off tools import dock.* and
+# build Config(default_config()) objects whose save() would otherwise land on the live file and
+# replace every page, folder and binding the user owns with a fresh default — that has happened,
+# and a config is the one thing in this app the user cannot re-derive. The frozen exe is always
+# the app; running from source, run.py opts in explicitly. Everything else gets a scratch file.
+_LIVE_OK = bool(getattr(sys, "frozen", False))
+
+
+def use_live_config() -> None:
+    """Called by run.py: this process IS the app, so it may read/write the real config."""
+    global _LIVE_OK
+    _LIVE_OK = True
+
+
+def live_config_enabled() -> bool:
+    return _LIVE_OK
+
+
 def config_path() -> str:
-    # Allow override for dev/testing.
-    return os.environ.get("AJAZZDOCK_CONFIG") or os.path.join(config_dir(), "config.json")
+    override = os.environ.get("AJAZZDOCK_CONFIG")      # explicit opt-in for dev/testing
+    if override:
+        return override
+    if _LIVE_OK:
+        return os.path.join(config_dir(), "config.json")
+    # Not the app -> a per-process scratch config. Reading it finds nothing (so tests start from
+    # defaults, as they expect) and writing it cannot destroy anything.
+    return os.path.join(tempfile.gettempdir(), "hexpad-scratch-config-%d.json" % os.getpid())
 
 
 def _discord_token_path() -> str:
@@ -78,9 +104,42 @@ def save_discord_token(token: str, refresh: str) -> None:
 
 
 def backups_dir() -> str:
-    d = os.path.join(config_dir(), "backups")
+    """The restore-point folder. Only the app may use the real one: the history snapshots AND the
+    40-slot prune (backups._prune / Config._write_history) both live here, so a test or script
+    that saved a config used to add a junk snapshot to Erik's real restore points and, through the
+    prune, delete his oldest real one. By 2026-10-11 24 of his 40 slots were scratch junk and a
+    scratch run had written a config modified in memory there. Same rule as config_path()."""
+    override = os.environ.get("AJAZZDOCK_CONFIG")
+    if override:                                   # explicit dev/test config -> backups beside it
+        base = os.path.dirname(os.path.abspath(override))
+    elif _LIVE_OK:
+        base = config_dir()
+    else:                                          # not the app -> a throwaway per-process folder
+        base = os.path.join(tempfile.gettempdir(), "hexpad-scratch-%d" % os.getpid())
+    d = os.path.join(base, "backups")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+# A default config weighs 14 (2 pages + 12 items); a config with real work in it weighs hundreds.
+# Anything under this is treated as "blank" for the purposes of the rescue snapshot.
+_WIPE_FLOOR = 24
+
+
+def config_weight(data: Dict[str, Any]) -> int:
+    """How much user work a config holds: bound keys + pages + folders, across profiles/folders."""
+    n = 0
+    for pr in (data.get("profiles") or []):
+        pages = pr.get("pages") or []
+        n += len(pages)
+        for pg in pages:
+            n += len(pg.get("items") or {})
+        folders = pr.get("folders") or {}
+        n += len(folders)
+        for f in folders.values():
+            for pg in (f.get("pages") or [{"items": f.get("items") or {}}]):
+                n += len(pg.get("items") or {})
+    return n
 
 
 def default_config() -> Dict[str, Any]:
@@ -93,7 +152,11 @@ def default_config() -> Dict[str, Any]:
         "press_anim": "bounce",
         "page_fx": True,
         "folder_anim": "zoom",
-        "live_style": "gauge",
+        # What exits a folder: a round button (btn9) keeps all 6 LCD keys free for content;
+    # "key6" puts the built-in Back tile on the 6th key. MUST match _migrate's default,
+    # or a fresh install behaves differently before and after its first restart.
+    "folder_back": "btn9",
+    "live_style": "gauge",
         "encoder_accel": True,                      # fast knob spin -> bigger steps
         # Ambient/idle screen: after `delay` s with no dock input, dim to `dim`% and show a
         # grid-spanning clock; any key/knob press wakes it (and is swallowed, not fired).
@@ -205,6 +268,7 @@ class Config:
             try:                                          # rolling backup of the last good config
                 if os.path.exists(path):
                     shutil.copyfile(path, path + ".bak")
+                    self._rescue_if_wiping(path)
             except OSError:
                 pass
             tmp = f"{path}.{os.getpid()}.tmp"
@@ -222,6 +286,32 @@ class Config:
                 self._write_history(path)
             except OSError:
                 pass
+
+    def _rescue_if_wiping(self, path: str) -> None:
+        """About to write a config that looks EMPTY over one that is full? Keep the old one first.
+
+        The rolling `config-*.json` history is a 40-slot ring, so a process that repeatedly saves a
+        blank config can flush every good snapshot out of it. A `rescue-*.json` copy is never
+        pruned and never overwritten, so the last good layout survives even a sustained wipe.
+        Cheap by construction: the existing file is only parsed when what we are about to write is
+        already suspiciously small, which never happens on a normal save."""
+        if config_weight(self.data) >= _WIPE_FLOOR:
+            return                                    # writing a real config -> nothing at risk
+        try:
+            with open(path, encoding="utf-8-sig") as f:
+                old = json.load(f)
+        except (OSError, ValueError):
+            return
+        if config_weight(old) < max(_WIPE_FLOOR, config_weight(self.data) * 2):
+            return                                    # the old one was small too -> not a wipe
+        d = backups_dir()
+        keep = [f for f in os.listdir(d) if f.startswith("rescue-") and f.endswith(".json")]
+        if len(keep) >= 30:
+            return                    # already holding plenty; the OLDEST are the valuable ones
+        dst = os.path.join(d, "rescue-%s.json"
+                           % datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+        if not os.path.exists(dst):
+            shutil.copyfile(path, dst)
 
     _last_snapshot_t = None      # in-memory throttle: skip the backups dir scan on the common path
 

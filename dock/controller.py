@@ -1,7 +1,9 @@
 """DockController: bind device input events to actions and render pages."""
 from __future__ import annotations
 
+import json
 import math
+import sys
 import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
@@ -16,7 +18,7 @@ from .apppoller import ForegroundPoller
 from .images import (render_face, press_frames, page_swipe_frames, folder_face,
                      folder_transition_frames, expand_gen, live_face, panel_frames, timer_face,
                      volume_hud_tiles, value_hud_tiles, ambient_clock_tiles, media_overflows,
-                     ambient_weather_tiles, ambient_now_playing_tiles,
+                     ambient_weather_tiles, ambient_now_playing_tiles, now_playing_sig,
                      AMBIENT_ANIMATED, AMBIENT_STYLE_ORDER)
 
 _AMBIENT_WX_CYCLE = 14.0      # dynamic idle: seconds showing the clock, then the weather, repeat
@@ -103,9 +105,15 @@ class DockController:
         self._calib_dirty = False
         self._calib_active = False            # True only while the calibration dialog is open
         self._panel = None                    # animated full-panel wallpaper state (or None)
-        self._volume_hud = None               # transient on-screen volume overlay (or None)
+        self._volume_hud = None               # transient knob-HUD session (dict, see show_value_hud) or None
+        self._hud_fx = None                   # hud_fx.KnobHud (lazy: numpy loads on the FIRST HUD only)
+        self._hud_lock = threading.Lock()     # show_value_hud runs on action worker threads
+        self._hud_keys = None                 # loop-owned: the HUD tiles on the keys right now, or None
+        self._hud_shown = -1e9                # last time a HUD frame was on the keys (the 'fresh' gate)
+        self._hud_clock = time.time           # the HUD session clock (a test drives a fake one)
         self._last_input = time.time()        # last dock input (for the idle/ambient timer)
         self._ambient = None                  # ambient/idle screen state (or None when awake)
+        self._retries = 0                     # consecutive failed reconnect scans (backoff)
         self._has_live = False                # current page has at least one live/dynamic key
         self._live_last = 0.0                 # last live-key refresh timestamp
         self._live_sig = {}                   # per-key last-pushed live signature (skip no-op redraws)
@@ -146,12 +154,48 @@ class DockController:
         self._thread = threading.Thread(target=self._run, name="dock-loop", daemon=True)
         self._thread.start()
         self._poller.start()
+        threading.Thread(target=self._monitors_startup, name="monitor-restore", daemon=True).start()
+
+    def _monitors_startup(self) -> None:
+        self._restore_monitors()
+        try:                                  # a monitors off/on key exists -> read the DDC caps now,
+            if '"monpower"' in json.dumps(self.config.data):   # so its first press is quick
+                from . import monitors
+                monitors.warm_up()
+        except Exception:
+            pass
+
+    @staticmethod
+    def _restore_monitors() -> None:
+        """Monitors left switched off by the 'monpower' key (app quit / crash / reboot) -> back on."""
+        try:
+            from . import monitors
+            done = monitors.restore_if_left_off()
+            if done:
+                print(f"[monpower] restored: {done}")
+        except Exception as e:
+            print(f"[monpower] restore failed: {e}")
 
     def stop(self) -> None:
         self._running = False
         self._poller.stop()
+        # release UDP 9001 for other OSC apps — but only if the VRChat bridge was ever used
+        _vrc = sys.modules.get(__package__ + ".vrcosc")
+        if _vrc is not None:
+            try:
+                _vrc.stop()
+            except Exception:
+                pass
         if self._thread:
             self._thread.join(timeout=2.0)
+        _mon = sys.modules.get(__package__ + ".monitors")
+        if _mon is not None:                        # never quit leaving the PC monitors dark, nor
+            try:                                    # with a DDC call still in flight
+                done = _mon.shutdown()
+                if done:
+                    print(f"[monpower] on quit: {done}")
+            except Exception as e:
+                print(f"[monpower] quit restore failed: {e}")
         try:
             if self.connected:
                 self.dock.clear_all()
@@ -383,7 +427,12 @@ class DockController:
         while self._running:
             if not self.connected:
                 if not self._try_connect():
-                    time.sleep(1.0)
+                    # is_present() is a FULL HID bus enumeration (~19 ms here: hidapi opens a
+                    # handle to every interface). Poll fast right after a disconnect so a
+                    # re-plug is picked up at once, then back off — an unplugged dock should
+                    # not cost ~2% of a core all day.
+                    self._retries += 1
+                    time.sleep(1.0 if self._retries <= 20 else 3.0)
                     continue
             try:
                 self._service_requests()
@@ -402,11 +451,21 @@ class DockController:
                     pr.get("hold_pending") and not pr["hold_fired"]
                     for pr in self._press.values())
                 anim_idle = self._ambient is not None and self._ambient.get("anim")
-                # 10ms only for real per-frame work (animation/HUD/calib/panel) or a pending gesture.
-                fast = on and (self._anim or self._page_anim or self._calib or self._panel
+                # A wallpaper needs per-frame wakeups only while it HAS frames to advance: a
+                # still image is pushed once and _advance_panel then no-ops, so the 10 ms tier
+                # burned ~99 of every 100 wakeups on nothing. An animated one wakes on its own
+                # frame grid (fps, default 12) instead of at 100 Hz.
+                panel_anim = bool(self._panel) and len(self._panel["jpeg"]) > 1
+                # 10ms only for real per-frame work (animation/HUD/calib) or a pending gesture.
+                fast = on and (self._anim or self._page_anim or self._calib
                                or self._volume_hud)
                 if fast or gesture:
                     timeout = 10
+                elif on and panel_anim:                 # wake on the wallpaper's own frames
+                    p = self._panel
+                    per = 1.0 / p["fps"]
+                    due = per - ((time.time() - p["start"]) % per)
+                    timeout = max(1, min(100, int(due * 1000)))
                 elif on and anim_idle:                  # animated idle -> wake to the next ~15fps
                     due = self._ambient.get("last_anim", 0.0) + 0.066 - time.time()   # frame, not 100Hz
                     timeout = max(1, min(66, int(due * 1000)))
@@ -434,6 +493,7 @@ class DockController:
         try:
             if not AKP03.is_present():
                 return False
+            self._retries = 0                  # found it -> next disconnect polls fast again
             self.dock.open()
             self.dock.set_brightness(self.config.brightness)
             self.dock.clear_all()
@@ -751,72 +811,147 @@ class DockController:
     # ---- transient knob-feedback HUD (any encoder that changes a value) -----
     def show_value_hud(self, value, name: str, *, muted: bool = False, accent=None,
                        unit: str = "%", relative: int = 0, vmax: int = 100) -> None:
-        """Pop a knob-feedback overlay (name + value + bar) on the keys for ~1.3 s. `value` is a
-        0..vmax reading (vmax=200 for Discord output), or None with `relative` = ±1 when only the
-        direction is known (RGB etc.)."""
+        """Pop the knob HUD (hud_fx.KnobHud: name, odometer number, LED ladder) on the keys; it
+        lingers 1.3 s after the LAST call. `value` is a 0..vmax reading (vmax=200 for Discord
+        output), or None with `relative` = ±1 when only the direction is known (RGB etc.).
+
+        Runs on action worker threads (system-volume reader, Discord/OBS coalescers, the Tapo
+        loop...), so it only RECORDS the detent, under _hud_lock; the device loop renders and
+        pushes the frames (_advance_volume_hud), keeping every HID write on the loop thread. The
+        same name continues the running session (the number glides on, the peak marker holds, a
+        turn during the exit sweep re-enters); a new name starts a new session."""
         target = None if value is None else int(value)
-        prev = self._volume_hud
-        # Carry the eased displayed value across rapid re-emits of the SAME overlay so the bar glides
-        # continuously instead of restarting from the new target each tick.
-        if (prev and prev.get("name") == (name or "") and prev.get("disp") is not None
-                and target is not None):
-            disp = prev["disp"]
-        else:
-            disp = None if target is None else float(target)
-        self._volume_hud = {"value": target, "name": name or "",
-                            "muted": bool(muted), "accent": accent, "unit": unit,
-                            "relative": int(relative), "vmax": int(vmax),
-                            "start": time.time(), "dur": 1.3, "drawn": None,
-                            "disp": disp, "disp_t": time.time()}
+        rel = int(relative or 0)
+        ev = {"value": target, "name": name or "", "muted": bool(muted), "accent": accent,
+              "unit": unit or "", "relative": (rel > 0) - (rel < 0),
+              "vmax": max(1, int(vmax or 100))}
+        now = self._hud_clock()
+        with self._hud_lock:
+            hud = self._volume_hud
+            if hud is None or hud["ev"]["name"] != ev["name"]:
+                # a new session; "faces" None = the loop has not rendered a frame of it yet
+                hud = {"t0": now, "events": 0, "dir": 0, "dur": 1.3, "ev": ev, "faces": None}
+                self._volume_hud = hud
+            else:
+                # the turn direction (chevrons, odometer kick) comes from the last two readings,
+                # or from a relative ±1 detent
+                a = hud["ev"]["value"]
+                if a is not None and target is not None and target != a:
+                    hud["dir"] = 1 if target > a else -1
+                elif ev["relative"]:
+                    hud["dir"] = ev["relative"]
+                hud["ev"] = ev
+            hud["events"] += 1
+            hud["start"] = now                     # the LAST detent: the HUD lingers dur after it
 
     def show_volume_hud(self, vol: int, muted: bool, name: str) -> None:
         """Back-compat: a volume HUD is a value HUD (negative vol = unknown / relative)."""
         self.show_value_hud(None if (vol is not None and vol < 0) else vol, name, muted=muted)
 
     def _advance_volume_hud(self) -> None:
+        """One HUD frame, on the device-loop thread: build the state KnobHud renders from (the
+        fields of the approved bench's HudSim.make_state), push ONLY the keys whose pixels changed,
+        and hand the keys back to the page once the HUD has lingered 1.3 s. At rest every tile is
+        the same cached image, so a resting HUD costs no USB writes; after the hand-back nothing
+        keeps rendering (_volume_hud is None -> the loop drops to its idle tiers)."""
         hud = self._volume_hud
         if not hud:
             return
-        if not self.connected or not self._display_on:
-            self._volume_hud = None
+        now = self._hud_clock()
+        live = self.connected and self._display_on
+        with self._hud_lock:
+            if self._volume_hud is not hud:
+                return                                # replaced meanwhile -> the next pass starts it
+            # a backwards wall-clock jump must not pin the HUD on screen: it just ends
+            done = not live or now - hud["start"] >= hud["dur"] or now < hud["start"] - 1.0
+            if done:
+                self._volume_hud = None
+            ev, events, direction, last = hud["ev"], hud["events"], hud["dir"], hud["start"]
+
+        def hand_back(render: bool) -> None:
+            self._hud_keys = None
+            if self._hud_fx is not None:
+                self._hud_fx.reset()                  # drop the page faces + per-tile caches
+            if render:
+                self._render_page()                   # the page again, at full JPEG quality
+
+        if done:
+            hand_back(render=live)
             return
-        if time.time() - hud["start"] >= hud["dur"]:
-            self._volume_hud = None
-            self._render_page()                       # revert to the page
-            return
-        # Ease the DISPLAYED value toward the target so the bar + number glide smoothly between
-        # readings (frame-rate-independent). Snap on a big jump — a hue wrap (359->1) or a fast spin —
-        # so the bar never sweeps the long way round and fast turns stay responsive.
-        target = hud["value"]
-        disp = hud.get("disp")
-        if target is not None and disp is not None:
-            now = time.time()
-            dt = max(0.0, now - hud.get("disp_t", now))
-            hud["disp_t"] = now
-            gap = target - disp
-            if abs(gap) > hud["vmax"] * 0.5:
+        try:
+            if hud["faces"] is None:                  # the first frame of a new session
+                from . import hud_fx                  # lazy: numpy + the LED geometry load on the
+                if self._hud_fx is None:              # first HUD, not at app start
+                    self._hud_fx = hud_fx.KnobHud()
+                self._hud_fx.reset()
+                # Another knob's HUD still up -> wipe in from ITS tiles (what the keys show), not
+                # from the page: no flash of the page between two knobs. Otherwise what the keys
+                # show is not known for sure (an idle-clock wake, a press bounce or a toggle repaint
+                # may have drawn since the last page render), so the first frame pushes all 6 once.
+                on = self._hud_keys
+                n = len(LCD_KEYS)
+                hud["under"] = list(on["img"]) if on else None
+                hud["img"] = list(on["img"]) if on else [None] * n
+                hud["raw"] = list(on["raw"]) if on else [None] * n
+                # the power-on sparkle only on a FRESH HUD - not on every turn a few seconds apart
+                hud["fresh"] = on is None and now - self._hud_shown >= 5.0
+                hud["disp"] = hud["disp_t"] = None
+                hud["faces"] = [self._face_for_index(i) for i in range(n)]   # for ENTER / EXIT
+            from . import hud_fx
+            t = now - hud["t0"]
+            target, prev, pt = ev["value"], hud["disp"], hud["disp_t"]
+            # Ease the DISPLAYED value toward the target (frame-rate independent, tau 55 ms) so the
+            # odometer rolls and the ladder glides between readings. Snap on a big jump - a hue
+            # wrap (359->1) or a fast spin - so it never sweeps the long way round.
+            if target is None:
+                disp = None
+            elif prev is None:
+                disp = float(target)
+            elif abs(target - prev) > ev["vmax"] * 0.5:
                 disp = float(target)
             else:
-                disp += gap * (1.0 - math.exp(-dt / 0.055))
+                disp = prev + (target - prev) * (1.0 - math.exp(-max(0.0, t - pt) / 0.055))
                 if abs(target - disp) < 0.4:
                     disp = float(target)
-            hud["disp"] = disp
-            render_val = disp
-        else:
-            render_val = target                       # relative ▲/▼ or muted: nothing to ease
-        sig = (None if render_val is None else int(round(render_val)),
-               hud["muted"], hud["name"], hud["relative"], hud["accent"], hud["unit"], hud["vmax"])
-        if hud["drawn"] != sig:
-            hud["drawn"] = sig
-            try:
-                tiles = value_hud_tiles(render_val, hud["name"], muted=hud["muted"],
-                                        accent=hud["accent"], unit=hud["unit"],
-                                        relative=hud["relative"], vmax=hud["vmax"])
-                for i, tile in enumerate(tiles):
+            vel = (disp - prev) / (t - pt) if (disp is not None and prev is not None and t > pt) else 0.0
+            hud["disp"], hud["disp_t"] = disp, t
+            st = {"t": t,                                  # s since the session appeared
+                  "since_event": now - last,               # s since the last detent / push
+                  "remaining": max(0.0, last + hud["dur"] - now),   # until the exit completes
+                  "events": events, "name": ev["name"], "unit": ev["unit"], "vmax": ev["vmax"],
+                  "value": target, "disp": disp, "vel": vel, "dir": direction,
+                  "relative": ev["relative"], "muted": ev["muted"], "accent": ev["accent"],
+                  # the enter wipe of a knob switch sweeps over the old HUD; the exit always
+                  # dissolves into the real page
+                  "page": (hud["under"] if hud["under"] is not None and t < hud_fx.ENTER
+                           else hud["faces"]),
+                  "tile": hud_fx.T, "gap": hud_fx.GAP, "fresh": hud["fresh"]}
+            tiles = self._hud_fx.render(st)
+            pushed = False
+            for i, tile in enumerate(tiles):
+                if tile is hud["img"][i]:
+                    continue                          # the very same cached tile -> no USB write
+                raw = tile.tobytes()
+                if raw != hud["raw"][i]:              # pixels changed -> push this key only
                     self.dock.set_key_pil(i, tile, quality=_ANIM_Q, subsampling=_ANIM_SS)
+                    hud["raw"][i] = raw
+                    pushed = True
+                hud["img"][i] = tile
+            if pushed:
                 self.dock.flush()
-            except OSError:
-                self._volume_hud = None
+            self._hud_keys = {"img": hud["img"], "raw": hud["raw"]}
+            self._hud_shown = now
+        except OSError:
+            with self._hud_lock:
+                if self._volume_hud is hud:
+                    self._volume_hud = None
+            hand_back(render=False)                   # the loop's next read sees the unplug
+        except Exception as e:                        # a render bug must not freeze a half-drawn HUD
+            _log_error("knob_hud", e)
+            with self._hud_lock:
+                if self._volume_hud is hud:
+                    self._volume_hud = None
+            hand_back(render=True)
 
     # ---- ambient / idle screen --------------------------------------------
     def _maybe_enter_ambient(self) -> None:
@@ -910,11 +1045,16 @@ class DockController:
         phase = now - amb["start"]
         try:
             if layer == "playing":
-                amb["sig"] = None
+                # Pace first (even when the frame is skipped below) — the loop derives its
+                # next wake from last_anim, so leaving it stale makes it busy-spin at 1 ms.
                 amb["last_anim"] = now
                 title, artist, art, playing = amb["np"]
-                tiles = ambient_now_playing_tiles(title, artist, art, phase, playing,
-                                                  pos=live.media_position())
+                pos = live.media_position()
+                sig = now_playing_sig(title, artist, art, phase, playing, pos)
+                if sig is not None and amb.get("sig") == sig:
+                    return          # still cover, ticker/progress unmoved -> no render, no USB
+                amb["sig"] = sig
+                tiles = ambient_now_playing_tiles(title, artist, art, phase, playing, pos=pos)
             elif layer == "weather":
                 wx = amb.get("wx")
                 if not wx:                              # payload expired between pick and draw -> hold the frame
@@ -940,9 +1080,21 @@ class DockController:
                 tiles = ambient_clock_tiles(hh, mm, wd, day, mon, drift=drift,
                                             style=style, phase=phase, solar=solar)
             q, ss = (_ANIM_Q, _ANIM_SS) if animated else (92, 0)
+            # Push only the tiles whose pixels actually changed. On the now-playing layer the
+            # cover tiles are identical frame after frame, so this alone removes most of the
+            # idle USB traffic (and the JPEG encode that feeds it).
+            pushed = amb.get("pushed") or [None] * len(tiles)
+            dirty = False
             for i, tile in enumerate(tiles):
+                raw = tile.tobytes()
+                if pushed[i] == raw:
+                    continue
+                pushed[i] = raw
+                dirty = True
                 self.dock.set_key_pil(i, tile, quality=q, subsampling=ss)
-            self.dock.flush()
+            amb["pushed"] = pushed
+            if dirty:
+                self.dock.flush()
         except OSError:
             self._ambient = None
 

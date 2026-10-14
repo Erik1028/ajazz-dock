@@ -23,14 +23,27 @@ def inspector_height(win):
     return None
 
 
+# ONE window for the whole run. Building a fresh ConfigWindow per case is quadratic: every window
+# and its DockController leave app-wide filters, timers and sampler threads behind (threshold GC is
+# disabled process-wide — see the COM-crash fix), so by the ~9th case each build took ~10 s and the
+# run never finished. Rebuilding the editor via refresh()+select() exercises exactly what this test
+# is about: that every action type's editor builds as columns without raising.
+_data = default_config()
+_data["folder_back"] = "key6"          # so the "back-tile" case has a Back tile to select
+_data["profiles"][0]["folders"] = {"f1": {"name": "F", "items": {"key1": {"label": "a"}}}}
+_cfg = Config(_data)
+WIN = ConfigWindow(DockController(_cfg))
+WIN.resize(1340, 860); WIN.show(); app.processEvents()
+
+
 def check(label, item, sel="key1", folder=False):
-    data = default_config()
+    data = _cfg.data
     data["profiles"][0]["pages"][0]["items"]["key1"] = item
-    if folder:
-        data["profiles"][0]["folders"] = {"f1": {"name": "F", "items": {"key1": {"label": "a"}}}}
     try:
-        win = ConfigWindow(DockController(Config(data)))
-        win.resize(1340, 860); win.show(); app.processEvents()
+        win = WIN
+        win._exit_folder_edit() if win.view_folder else None
+        win.refresh()
+        app.processEvents()
         if folder:
             win._enter_folder_edit("f1"); win.select("key6")
         else:
@@ -50,7 +63,6 @@ def check(label, item, sel="key1", folder=False):
         print(f"  {'ok ' if ok else 'FAIL'} {label:14} cols={ncols} barH={h} {note}")
         if not ok:
             fails.append(label)
-        win.close()
     except Exception as e:
         print(f"  FAIL {label:14} raised {type(e).__name__}: {e}")
         fails.append(label)
@@ -58,7 +70,8 @@ def check(label, item, sel="key1", folder=False):
 
 ACTIONS = ["open", "hotkey", "text", "media", "volume", "mic", "sound", "discord",
            "substance", "quick", "system", "monitor", "page", "folder", "profile",
-           "brightness", "macro", "obs", "smartlight", "rgbscene", "appvolume", "toggle"]
+           "brightness", "macro", "obs", "smartlight", "rgbscene", "appvolume", "toggle",
+           "monpower"]
 for t in ACTIONS:
     it = {"icon": "C:/x.png", "action": {"type": t}}
     if t == "open":

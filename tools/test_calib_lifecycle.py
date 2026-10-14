@@ -14,7 +14,9 @@ print("OK preview ignored before begin")
 
 c.begin_calibration()
 c.preview_calibration(92, 120, -4, 6)
-assert c._calib == (92, 120, -4, 6) and c._calib_dirty, c._calib
+# _calib carries a 5th field now (the calibratable EDGE_INSET) — check the geometry it was
+# given, and that an inset came along, rather than pinning the tuple width.
+assert c._calib[:4] == (92, 120, -4, 6) and len(c._calib) == 5 and c._calib_dirty, c._calib
 print("OK preview works inside a session")
 
 c.apply_calibration(92, 120, -4, 6)

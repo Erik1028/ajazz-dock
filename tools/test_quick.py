@@ -18,8 +18,9 @@ def check(name, cond):
         fails.append(name)
 
 
-# stub every real side effect
-A.keyboard.send = lambda k: rec.append(("send", k))
+# stub every real side effect. `keyboard` is imported LAZILY inside _kb_send (so the module can
+# load without it), so the stub goes on the wrapper, not on a module-level `keyboard` attribute.
+A._kb_send = lambda k: rec.append(("send", k))
 A.subprocess.Popen = lambda args, **kw: rec.append(("popen", list(args)))
 A.os.startfile = lambda t: rec.append(("startfile", t))
 A.ActionEngine._empty_recycle_bin = staticmethod(lambda: rec.append(("recycle_empty",)))
@@ -30,8 +31,10 @@ eng._system = lambda what: rec.append(("system", what))
 
 
 def run(op):
+    """Dispatch directly. execute() now routes blocking keyboard/system actions to a worker
+    thread (see _INLINE), so going through it would race this test instead of testing routing."""
     rec.clear()
-    eng.execute({"type": "quick", "op": op})
+    eng._quick(op)
     return list(rec)
 
 

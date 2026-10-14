@@ -13,6 +13,10 @@ from dock.gui import ConfigWindow                         # noqa: E402
 
 app = QApplication([])
 data = default_config()
+# The Back TILE only exists in "key6" mode; the shipped default exits folders with the round
+# button (btn9), which leaves all 6 LCD keys free for content. Opt in explicitly so this test
+# exercises the tile editor rather than depending on a missing-key fallback.
+data["folder_back"] = "key6"
 prof = data["profiles"][0]
 prof["pages"][0]["items"]["key2"] = {"label": "Apps", "action": {"type": "folder", "folder": "folder1"}}
 prof["folders"] = {"folder1": {"name": "Apps", "items": {

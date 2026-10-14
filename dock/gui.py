@@ -71,6 +71,23 @@ class _WheelGuard(QObject):
         return False
 
 
+_WHEEL_GUARD = None
+
+
+def _install_wheel_guard():
+    """Install the wheel guard ONCE per process. It is stateless, and an app-wide event filter is
+    never removed while its object lives — with threshold GC disabled (see the COM-crash fix) a
+    per-window guard would survive every closed window and make Qt walk one more filter for every
+    event, forever. The app reuses a single ConfigWindow, but a test (or a future re-open path)
+    that builds several must not degrade the whole UI."""
+    global _WHEEL_GUARD
+    app = QApplication.instance()
+    if _WHEEL_GUARD is None and app is not None:
+        _WHEEL_GUARD = _WheelGuard(app)
+        app.installEventFilter(_WHEEL_GUARD)
+    return _WHEEL_GUARD
+
+
 class _HScroll(QScrollArea):
     """A scroll area whose mouse wheel scrolls HORIZONTALLY — used for the bottom inspector row,
     which lays its editor cards out left-to-right (a normal vertical wheel would do nothing)."""
@@ -125,8 +142,9 @@ def _acquire_singleton() -> bool:
         return True                           # never let the guard itself prevent launching
 
 ACTION_TYPES = ["none", "open", "hotkey", "text", "media", "volume", "appvolume", "mic", "sound",
-                "discord", "substance", "quick", "system", "monitor", "smartlight", "rgbscene", "obs",
-                "page", "folder", "profile", "brightness", "macro", "toggle", "http", "timer"]
+                "discord", "substance", "quick", "system", "monitor", "monpower", "smartlight", "rgbscene", "obs",
+                "page", "folder", "profile", "brightness", "macro", "toggle", "http", "timer",
+                "vrchat"]
 # Prisma effect names (must match its CLI's TryParseEffect aliases).
 _RGB_EFFECTS = ["Rainbow", "Static", "ColorCycle", "Breathing", "Strobe", "Gradient",
                 "Comet", "Twinkle", "Ambient", "Fire", "Music", "Off"]
@@ -333,35 +351,37 @@ ACTION_LABELS = {
     "none": "Nothing", "open": "Open app / file / URL", "hotkey": "Keyboard shortcut",
     "text": "Type text", "media": "Media control", "volume": "System volume",
     "appvolume": "App volume (mixer)", "mic": "Microphone mute", "sound": "Play sound (soundboard)", "discord": "Discord mute / deafen",
-    "system": "System (lock / sleep)", "monitor": "Monitor brightness", "page": "Switch page",
+    "system": "System (lock / sleep)", "monitor": "Monitor brightness",
+    "monpower": "Monitors off / on", "page": "Switch page",
     "folder": "Open folder", "profile": "Switch profile", "brightness": "Dock screen brightness",
     "macro": "Macro (advanced)", "substance": "Substance 3D Painter",
     "quick": "Quick action", "smartlight": "Smart light (Tapo / Lumos)",
     "rgbscene": "RGB scene (Prisma)", "obs": "OBS Studio", "toggle": "Toggle (2 states)",
     "http": "HTTP request (webhook)", "timer": "Timer / countdown",
+    "vrchat": "VRChat (OSC)",
 }
 _SHORT = {"none": "No action",
           "open": "Open", "hotkey": "Hotkey", "text": "Text", "media": "Media", "volume": "Volume",
           "appvolume": "App vol", "mic": "Mic", "sound": "Sound", "discord": "Discord",
-          "system": "System", "monitor": "Monitors", "page": "Page", "folder": "Folder",
+          "system": "System", "monitor": "Monitors", "monpower": "Mon. power", "page": "Page", "folder": "Folder",
           "profile": "Profile", "brightness": "Brightness", "macro": "Macro", "substance": "Painter",
           "quick": "Quick", "smartlight": "Light", "rgbscene": "RGB", "obs": "OBS", "toggle": "Toggle",
-          "http": "HTTP", "timer": "Timer"}
+          "http": "HTTP", "timer": "Timer", "vrchat": "VRChat"}
 # Compact "what this control does" labels drawn INSIDE the knobs / round buttons on the stage.
 _CTRL_SHORT = {"open": "Open", "hotkey": "Key", "text": "Text", "media": "Media",
                "volume": "Volume", "appvolume": "App vol", "mic": "Mic", "sound": "Sound",
-               "discord": "Discord", "system": "System", "monitor": "Screen", "page": "Page",
+               "discord": "Discord", "system": "System", "monitor": "Screen", "monpower": "Screens", "page": "Page",
                "folder": "Folder", "profile": "Profile", "brightness": "Bright", "macro": "Macro",
                "substance": "Brush", "quick": "Quick", "smartlight": "Light", "rgbscene": "RGB",
-               "obs": "OBS", "http": "HTTP", "timer": "Timer"}
+               "obs": "OBS", "http": "HTTP", "timer": "Timer", "vrchat": "VRChat"}
 
 # Icon + one-line description per action, and a category grouping — used by the searchable picker.
 ACTION_EMOJI = {
     "none": "🚫", "open": "📂", "hotkey": "⌨️", "text": "🔤", "media": "⏯️", "volume": "🔊",
     "appvolume": "🎚️", "mic": "🎙️", "sound": "🔉", "discord": "💬", "substance": "🎨",
-    "quick": "⚡", "system": "🖥️", "monitor": "☀️", "smartlight": "💡", "rgbscene": "🌈", "obs": "🎬",
+    "quick": "⚡", "system": "🖥️", "monitor": "☀️", "monpower": "🖥️", "smartlight": "💡", "rgbscene": "🌈", "obs": "🎬",
     "page": "📄", "folder": "📁", "profile": "👤", "brightness": "🔆", "macro": "🧩", "toggle": "🔁",
-    "http": "🌐", "timer": "⏱️",
+    "http": "🌐", "timer": "⏱️", "vrchat": "🥽",
 }
 ACTION_DESC = {
     "none": "Clear this key — remove its action (do nothing)",
@@ -378,6 +398,8 @@ ACTION_DESC = {
     "quick": "Common Windows shortcuts (lock, snip…)",
     "system": "Lock, sleep, or turn the screen off",
     "monitor": "Change your PC monitor brightness",
+    "monpower": "Turn all PC monitors off / on with one key (e.g. while you're in VR)",
+    "vrchat": "Toggle avatar things in VRChat over OSC (outfits, emotes, expressions)",
     "smartlight": "Turn your Tapo bulb on/off or set a colour",
     "rgbscene": "Set an RGB scene or brightness via Prisma",
     "obs": "Switch scene, record, stream or mute in OBS Studio",
@@ -394,9 +416,9 @@ ACTION_CATEGORIES = [
     ("Apps & files", ["open"]),
     ("Keyboard & text", ["hotkey", "text", "substance"]),
     ("Media & sound", ["media", "volume", "appvolume", "mic", "sound"]),
-    ("Streaming", ["obs"]),
+    ("Streaming", ["obs", "vrchat"]),
     ("Smart home & RGB", ["smartlight", "rgbscene"]),
-    ("System & Windows", ["system", "monitor", "brightness", "quick", "discord"]),
+    ("System & Windows", ["system", "monitor", "monpower", "brightness", "quick", "discord"]),
     ("Dock navigation", ["page", "folder", "profile"]),
     ("Advanced", ["macro", "toggle", "http", "timer"]),
 ]
@@ -408,6 +430,7 @@ PRESETS = [
     {"name": "Play / Pause", "binding": {"label": "Play", "icon": "⏯️", "action": {"type": "media", "media": "play_pause"}}},
     {"name": "Mute volume", "binding": {"label": "Mute", "icon": "🔇", "action": {"type": "volume", "volume": "mute"}}},
     {"name": "Smart light", "binding": {"label": "Light", "icon": "💡", "action": {"type": "smartlight", "mode": "toggle", "host": "192.168.0.87"}, "live": {"source": "light"}}},
+    {"name": "Monitors off / on", "binding": {"label": "Monitors", "icon": "🖥️", "action": {"type": "monpower", "mode": "toggle"}, "live": {"source": "monitors"}}},
     {"name": "Next page", "binding": {"label": "Next", "icon": "➡️", "action": {"type": "page", "page": "next"}}},
 ]
 
@@ -432,6 +455,15 @@ def _action_summary(item) -> str:
         if m in ("hue_up", "hue_down"):
             return f"Light: colour {'+' if m.endswith('up') else '−'}{int(a.get('step', 30))}°"
         return f"Light: {m}"
+    if t == "vrchat":
+        m = a.get("mode", "toggle")
+        if m == "chatbox":
+            return "VRChat: chatbox"
+        if m == "input":
+            return "VRChat: " + str(a.get("input") or "input")
+        nm = str(a.get("param") or "?").split("/")[-1]
+        return "VRChat: " + {"toggle": "toggle ", "set": "set ", "pulse": "pulse ",
+                             "cycle": "cycle "}.get(m, m + " ") + nm
     if t == "rgbscene":
         m = a.get("mode", "color")
         if m == "bright_set":
@@ -457,7 +489,8 @@ def _action_summary(item) -> str:
     detail = {"open": a.get("target"), "hotkey": a.get("keys"), "text": a.get("text"),
               "media": a.get("media"), "volume": a.get("volume"), "mic": a.get("mic"),
               "sound": a.get("file"), "discord": a.get("mode") or a.get("discord"), "system": a.get("system"),
-              "monitor": a.get("monitor"), "page": a.get("page"), "profile": a.get("name"),
+              "monitor": a.get("monitor"), "monpower": a.get("mode"), "page": a.get("page"),
+              "profile": a.get("name"),
               "brightness": a.get("mode") or a.get("value"), "macro": None}.get(t)
     if t in ("open", "sound") and detail:
         detail = os.path.basename(str(detail))
@@ -2502,6 +2535,145 @@ class LiveDataPickerDialog(QDialog):
         return super().eventFilter(obj, ev)
 
 
+def _vrc_status_text() -> str:
+    """One-line VRChat OSC status for the editor (never raises — the bridge may be unused)."""
+    try:
+        from . import vrcosc
+        # Do NOT start the listener here. Port 9001 may be held by only one process, and Hexpad
+        # runs 24/7 elevated — merely browsing to this action type must not take the port from
+        # VRCFaceTracking/VRCOSC/OVRToolkit. It starts on a real press or a VRChat live tile.
+        st = vrcosc.status()
+        if not st.get("listening"):
+            return ("VRChat bridge idle — it starts when this key is pressed or a VRChat tile is "
+                    "shown, and only then uses OSC port 9001.")
+        if st.get("error"):
+            return "OSC port 9001 is busy — is another OSC app running?"
+        if st.get("connected"):
+            nm = st.get("avatar_name") or "avatar"
+            return "VRChat connected \u00b7 %s \u00b7 %d parameters seen" % (nm, st.get("params", 0))
+        return ("Waiting for VRChat\u2026 enable OSC in-game: Action Menu > Options > OSC > Enabled. "
+                "Keys still send; the state shows once VRChat reports it.")
+    except Exception:
+        return "VRChat OSC bridge unavailable"
+
+
+class VrcParamPicker(QDialog):
+    """Pick an avatar parameter from VRChat's on-disk OSC config.
+
+    A real avatar exports hundreds of parameters (703 on the user's main one) and most are PhysBone
+    contact noise, so the list is searchable, type-filterable, and hides *_Squish/_Stretch/_Angle/
+    _IsPosed/_IsGrabbed by default. Falls back to manual entry when VRChat never wrote a config.
+    """
+
+    def __init__(self, parent=None, current=""):
+        super().__init__(parent)
+        self.setWindowTitle("VRChat avatar parameter")
+        self.resize(560, 560)
+        self.chosen = None
+        from . import vrcosc
+        self._vrc = vrcosc
+        self._params = []
+        v = QVBoxLayout(self)
+        v.setContentsMargins(16, 14, 16, 14)
+        v.setSpacing(8)
+
+        self.avatars = vrcosc.avatar_configs()
+        self.acombo = QComboBox()
+        self.acombo.setFocusPolicy(Qt.StrongFocus)
+        live_id = (vrcosc.status() or {}).get("avatar_id")
+        for c in self.avatars:
+            tag = "   \u25cf worn now" if c.get("id") and c["id"] == live_id else ""
+            self.acombo.addItem("%s  (%d)%s" % (c["name"], c["count"], tag), c.get("id"))
+        if not self.avatars:
+            self.acombo.addItem("No avatar config found \u2014 type a name below", None)
+        self.acombo.currentIndexChanged.connect(lambda _i: self._reload())
+        v.addWidget(QLabel("Avatar", objectName="section"))
+        v.addWidget(self.acombo)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search parameters\u2026")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._refill)
+        v.addWidget(self.search)
+
+        row = QHBoxLayout()
+        self.tcombo = QComboBox()
+        self.tcombo.setFocusPolicy(Qt.StrongFocus)
+        for lbl, val in (("All types", ""), ("Bool (toggles)", "Bool"), ("Int", "Int"), ("Float", "Float")):
+            self.tcombo.addItem(lbl, val)
+        self.tcombo.setCurrentIndex(1)                      # Bool = what a key usually toggles
+        self.tcombo.currentIndexChanged.connect(lambda _i: self._refill())
+        self.pb = QCheckBox("Hide PhysBone")
+        self.pb.setChecked(True)
+        self.pb.setToolTip("Hide _Squish / _Stretch / _Angle / _IsPosed / _IsGrabbed contact parameters")
+        self.pb.toggled.connect(lambda _b: self._refill())
+        row.addWidget(self.tcombo, 1)
+        row.addWidget(self.pb)
+        v.addLayout(row)
+
+        self.list = QListWidget()
+        self.list.itemDoubleClicked.connect(lambda _i: self._accept_sel())
+        v.addWidget(self.list, 1)
+
+        self.manual = QLineEdit(current or "")
+        self.manual.setPlaceholderText("\u2026or type a parameter name exactly")
+        v.addWidget(self.manual)
+
+        self.count_lbl = QLabel("", objectName="dim")
+        v.addWidget(self.count_lbl)
+        br = QHBoxLayout()
+        br.addStretch(1)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.reject)
+        ok = QPushButton("Use parameter")
+        ok.setObjectName("primary")
+        ok.setDefault(True)
+        ok.clicked.connect(self._accept_sel)
+        br.addWidget(cancel)
+        br.addWidget(ok)
+        v.addLayout(br)
+        self._reload()
+
+    def _reload(self):
+        try:
+            self._params = self._vrc.avatar_params(self.acombo.currentData())
+        except Exception:
+            self._params = []
+        self._refill()
+
+    def _refill(self):
+        q = self.search.text().strip().lower()
+        want = self.tcombo.currentData()
+        hide_pb = self.pb.isChecked()
+        self.list.clear()
+        n = 0
+        for prm in self._params:
+            nm = prm["name"]
+            if want and prm.get("type") != want:
+                continue
+            if hide_pb and self._vrc.is_physbone(nm):
+                continue
+            if q and q not in nm.lower():
+                continue
+            label = "%s    \u00b7  %s%s" % (nm, prm.get("type", "?"),
+                                          "" if prm.get("settable") else "   (read-only)")
+            it = QListWidgetItem(label)
+            it.setData(Qt.UserRole, nm)
+            self.list.addItem(it)
+            n += 1
+            if n >= 400:                                    # keep the list responsive
+                break
+        more = "  \u00b7  capped at 400 \u2014 search to narrow" if n >= 400 else ""
+        self.count_lbl.setText("%d shown of %d parameters%s" % (n, len(self._params), more))
+
+    def _accept_sel(self):
+        it = self.list.currentItem()
+        name = (it.data(Qt.UserRole) if it else "") or self.manual.text().strip()
+        if name:
+            self.chosen = name
+            self.accept()
+
+
 class _DevicePanel(QWidget):
     """The device-canvas surface. Emits `resized` so the dock mock can scale up to fill it (so it
     isn't a tiny island of keys in a big, maximised window)."""
@@ -2676,8 +2848,7 @@ class ConfigWindow(QMainWindow):
         self.slot_btns = {}
 
         # Stop the wheel from accidentally changing dropdowns/spins/sliders while scrolling.
-        self._wheel_guard = _WheelGuard(self)
-        QApplication.instance().installEventFilter(self._wheel_guard)
+        self._wheel_guard = _install_wheel_guard()
 
         # ---- edit history (undo / redo) ----------------------------------
         # Coalesced whole-config snapshots: every editor mutation calls cfg.save(); we wrap it to
@@ -5731,6 +5902,27 @@ class ConfigWindow(QMainWindow):
         row.addWidget(s, 1); row.addWidget(lab)
         return row
 
+    def _vrc_pick_param(self, item, a, edit):
+        """Choose an avatar parameter from VRChat's exported OSC config."""
+        dlg = VrcParamPicker(self, current=str(a.get("param") or ""))
+        if dlg.exec() and dlg.chosen:
+            edit.setText(dlg.chosen)                 # textChanged writes it through _set_action
+
+    def _vrc_show_state(self, item, a):
+        """One click: make this key a live tile of the bound parameter, so it shows what is ON."""
+        name = str(a.get("param") or "").strip()
+        if not name:
+            return
+        item["live"] = {"source": "vrc:" + name}
+        item.pop("icon", None)                       # live data replaces the icon layer
+        try:
+            self.cfg.save()
+        except OSError:
+            pass
+        self._refresh_key_preview(self.sel)
+        self._render_timer.start()
+        QTimer.singleShot(0, self._populate_editor)
+
     def _build_action_fields(self, item):
         while self.action_fields_layout.count():
             it = self.action_fields_layout.takeAt(0)
@@ -6038,6 +6230,64 @@ class ConfigWindow(QMainWindow):
                         objectName="dim")
             sh.setWordWrap(True)
             form.addRow(sh)
+        elif t == "vrchat":
+            mc = QComboBox(); mc.setFocusPolicy(Qt.StrongFocus)
+            for lbl, val in (("Toggle parameter", "toggle"), ("Set parameter", "set"),
+                             ("Pulse (emote / trigger)", "pulse"), ("Cycle values", "cycle"),
+                             ("Chatbox message", "chatbox"), ("Input button", "input")):
+                mc.addItem(lbl, val)
+            if not a.get("mode"):
+                a["mode"] = "toggle"
+            mi = mc.findData(a.get("mode", "toggle"))
+            mc.setCurrentIndex(mi if mi >= 0 else 0)
+
+            def _vrc_mode(_i=None):
+                self._set_action(a, "mode", mc.currentData())
+                QTimer.singleShot(0, self._populate_editor)     # show that mode's fields
+            mc.currentIndexChanged.connect(_vrc_mode)
+            form.addRow("Do", mc)
+            m = a.get("mode", "toggle")
+
+            if m in ("toggle", "set", "pulse", "cycle"):
+                prow = QHBoxLayout()
+                pe = line("param", "e.g. VF12_Jacket/Toggle")
+                pick = QPushButton("Pick\u2026"); pick.setFixedWidth(64)
+                pick.setToolTip("Choose from the parameters VRChat exported for your avatar")
+                pick.clicked.connect(lambda: self._vrc_pick_param(item, a, pe))
+                prow.addWidget(pe); prow.addWidget(pick)
+                form.addRow("Parameter", prow)
+            if m in ("set", "pulse"):
+                form.addRow("Type", combo("vtype", ["bool", "int", "float"], "bool"))
+                form.addRow("Value", line("value", "true / 1 / 0.5"))
+            if m == "cycle":
+                form.addRow("Type", combo("vtype", ["int", "float", "bool"], "int"))
+                form.addRow("Values", line("values", "0, 1, 2, 3"))
+            if m in ("pulse", "input"):
+                form.addRow("Hold (ms)", spin("hold", 20, 5000, 150 if m == "pulse" else 120))
+            if m == "chatbox":
+                form.addRow("Message", line("text", "hello!"))
+                sfx = QCheckBox("Notification sound")
+                sfx.setChecked(bool(a.get("sfx")))
+                sfx.toggled.connect(lambda b: self._set_action(a, "sfx", bool(b)))
+                form.addRow("", sfx)
+            if m == "input":
+                form.addRow("Button", combo("input", ["Jump", "Voice", "Run", "AFKToggle",
+                                                      "ToggleSitStand", "QuickMenuToggleLeft",
+                                                      "QuickMenuToggleRight", "MoveForward",
+                                                      "MoveBackward", "MoveLeft", "MoveRight",
+                                                      "LookLeft", "LookRight", "ComfortLeft",
+                                                      "ComfortRight", "GrabRight", "UseRight",
+                                                      "DropRight", "GrabLeft", "UseLeft", "DropLeft"], "Jump"))
+
+            info = QLabel(_vrc_status_text(), objectName="dim")
+            info.setWordWrap(True)
+            form.addRow("", info)
+            if m in ("toggle", "set", "pulse", "cycle") and self.sel.startswith("key"):
+                showb = QPushButton("Show this parameter's state on the key")
+                showb.setToolTip("Turn the key into a live tile that lights up when the parameter is on")
+                showb.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                showb.clicked.connect(lambda: self._vrc_show_state(item, a))
+                form.addRow("", showb)
         elif t == "http":
             form.addRow("URL", line("url", "https://api.example.com/webhook"))
             form.addRow("Method", combo("method", ["GET", "POST", "PUT", "PATCH", "DELETE"], "GET"))
@@ -6110,6 +6360,43 @@ class ConfigWindow(QMainWindow):
             a.setdefault("index", "all")
             disp.currentIndexChanged.connect(lambda _i: self._set_action(a, "index", disp.currentData()))
             form.addRow("Display", disp)
+        elif t == "monpower":
+            is_tap_key = self.sel.startswith("key") and item.get("action") is a
+            if is_tap_key and not a.get("mode") and not item.get("live") and not item.get("icon"):
+                # freshly picked on a key -> show the on/off state on it (deferred: _set_live rebuilds;
+                # a key with its own icon keeps it - the checkbox below links the state on request)
+                QTimer.singleShot(0, lambda: self._set_live(item, "monitors"))
+            pm = QComboBox(); pm.setFocusPolicy(Qt.StrongFocus)
+            for lbl, val in (("Toggle off / on", "toggle"), ("Turn off", "off"), ("Turn on", "on")):
+                pm.addItem(lbl, val)
+            if not a.get("mode"):
+                a["mode"] = "toggle"
+            pi = pm.findData(a.get("mode"))
+            pm.setCurrentIndex(pi if pi >= 0 else 0)
+            pm.currentIndexChanged.connect(lambda _i: self._set_action(a, "mode", pm.currentData()))
+            form.addRow("Press does", pm)
+            if is_tap_key:
+                chk = QCheckBox("Show on / off state on this key")
+                chk.setChecked((item.get("live") or {}).get("source") == "monitors")
+
+                def _link_mon_live(on):
+                    if on:
+                        self._set_live(item, "monitors")
+                    elif (item.get("live") or {}).get("source") == "monitors":
+                        item.pop("live", None)
+                        self.cfg.save(); self.controller.request_render()
+                    self._refresh_key_preview(self.sel)
+                chk.toggled.connect(_link_mon_live)
+                form.addRow(chk)
+            mh = QLabel("Switches the monitors' screens off over DDC/CI, but Windows keeps them "
+                        "connected — SteamVR / Virtual Desktop still show their desktop and "
+                        "windows don't move. An HDMI monitor that won't stay off is dimmed to "
+                        "black instead (its brightness is restored). Turning back on briefly "
+                        "blinks every screen (a signal refresh that wakes monitors ignoring the "
+                        "DDC wake). Quitting Hexpad turns them back on.",
+                        objectName="dim")
+            mh.setWordWrap(True)
+            form.addRow(mh)
         elif t == "smartlight":
             if not a.get("host"):
                 a["host"] = "192.168.0.87"
@@ -6534,6 +6821,13 @@ class ConfigWindow(QMainWindow):
             if pw.text():
                 t["password"] = pw.text()
             self.cfg.save()
+            try:            # push into live.py like the weather/OBS dialogs do — otherwise the
+                from . import live      # bulb sampler keeps using the credentials it read at
+                live.set_tapo_creds(t.get("email") or None,     # startup and the tile stays dead
+                                    t.get("password") or None)
+                self.controller.refresh_live()
+            except Exception:
+                pass
 
     def _obs_connection(self):
         """Host / port / password for OBS Studio's WebSocket server (with a Test button)."""

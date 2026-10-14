@@ -108,15 +108,24 @@ class _OBS:
         """An input's volume as a 0..1 multiplier (1.0 == 0 dB / unity), or None if unknown."""
         return self._rd(self.request("GetInputVolume", {"inputName": inp})).get("inputVolumeMul")
 
+    @staticmethod
+    def _ok(r):
+        return bool(((r or {}).get("requestStatus") or {}).get("result"))
+
     def set_input_volume_mul(self, inp, mul):
-        self.request("SetInputVolume", {"inputName": inp, "inputVolumeMul": float(mul)})
+        """True only if OBS actually accepted the write."""
+        return self._ok(self.request("SetInputVolume",
+                                     {"inputName": inp, "inputVolumeMul": float(mul)}))
 
     def input_muted(self, inp):
-        return bool(self._rd(self.request("GetInputMute", {"inputName": inp})).get("inputMuted"))
+        """The mute state, or None if OBS refused / did not answer — NOT the same as False."""
+        d = self._rd(self.request("GetInputMute", {"inputName": inp}))
+        return None if "inputMuted" not in d else bool(d["inputMuted"])
 
     def toggle_input_mute(self, inp):
-        """Flip an input's mute; returns the NEW mute state."""
-        return bool(self._rd(self.request("ToggleInputMute", {"inputName": inp})).get("inputMuted"))
+        """The NEW mute state, or None if OBS refused / did not answer."""
+        d = self._rd(self.request("ToggleInputMute", {"inputName": inp}))
+        return None if "inputMuted" not in d else bool(d["inputMuted"])
 
 
 _obs = _OBS()
@@ -139,7 +148,7 @@ def input_volume_mul(inp):
 
 
 def set_input_volume_mul(inp, mul):
-    _obs.set_input_volume_mul(inp, mul)
+    return _obs.set_input_volume_mul(inp, mul)
 
 
 def input_muted(inp):

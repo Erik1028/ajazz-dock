@@ -10,6 +10,10 @@ from dock.config import Config, default_config          # noqa: E402
 from dock.controller import DockController              # noqa: E402
 
 data = default_config()
+# The built-in Back TILE lives on key6 only in "key6" mode; the shipped default exits folders
+# with the round button (btn9), leaving all 6 LCD keys for content. Opt in explicitly so the
+# Back-tile checks below test the tile instead of an empty key.
+data["folder_back"] = "key6"
 prof = data["profiles"][0]
 prof["folders"] = {"f1": {"name": "Apps", "items": {
     "key1": {"label": "FF", "action": {"type": "open", "target": "firefox"}}}}}
@@ -43,7 +47,13 @@ check("folder_back exits to the page", ctrl._folder is None)
 check("items are the page again", ctrl._current_items()["key1"]["action"]["type"] == "folder")
 ctrl.enter_folder("f1")
 ctrl.next_page()
-check("changing page exits the folder", ctrl._folder is None)
+# Folders became multi-page: inside one, a page-switch flips the FOLDER's own pages and stays
+# in the folder (it used to exit). The switch is queued for the loop thread, not applied here.
+check("page-switch inside a folder stays in the folder", ctrl._folder == "f1")
+check("and it queues a FOLDER page switch",
+      bool(ctrl._pending_page) and ctrl._pending_page[0] is True)
+ctrl.folder_back()
+check("folder_back still exits", ctrl._folder is None)
 ctrl.enter_folder("does-not-exist")
 check("unknown folder id is ignored", ctrl._folder is None)
 

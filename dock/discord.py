@@ -38,6 +38,9 @@ _k32.WriteFile.argtypes = [wintypes.HANDLE, wintypes.LPCVOID, wintypes.DWORD,
 _k32.ReadFile.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
                           ctypes.POINTER(wintypes.DWORD), wintypes.LPVOID]
 _k32.CloseHandle.argtypes = [wintypes.HANDLE]
+_k32.PeekNamedPipe.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+                               ctypes.POINTER(wintypes.DWORD)]
 
 
 class NeedsAuth(Exception):
@@ -49,6 +52,7 @@ class _Pipe:
 
     def __init__(self) -> None:
         self.h = None
+        self.deadline = None           # absolute monotonic bound for the current exchange
 
     def connect(self) -> bool:
         for i in range(10):
@@ -64,7 +68,23 @@ class _Pipe:
         if not _k32.WriteFile(self.h, data, len(data), byref(n), None):
             raise OSError("discord pipe write failed")
 
+    def _wait_readable(self) -> None:
+        """Poll with PeekNamedPipe (non-blocking) until the pipe has bytes. The handle is a
+        SYNCHRONOUS one, so a bare ReadFile on a silent-but-open Discord blocks forever — and
+        every command runs under _Discord._lock, so that would wedge the sampler thread AND
+        every key press behind it. A timeout is raised as OSError so _cmd reconnects."""
+        while True:
+            avail = wintypes.DWORD()
+            if not _k32.PeekNamedPipe(self.h, None, 0, None, byref(avail), None):
+                raise OSError("discord pipe peek failed")      # broken -> _cmd reconnects
+            if avail.value:
+                return
+            if self.deadline is not None and time.monotonic() > self.deadline:
+                raise OSError("discord timed out")
+            time.sleep(0.01)
+
     def _read(self, want: int) -> bytes:
+        self._wait_readable()
         buf = ctypes.create_string_buffer(want)
         n = wintypes.DWORD()
         if not _k32.ReadFile(self.h, buf, want, byref(n), None) or n.value == 0:
@@ -135,8 +155,9 @@ class _Discord:
         frame = {"cmd": cmd, "nonce": nonce}
         if args is not None:
             frame["args"] = args
-        self._pipe.send(1, frame)
         deadline = time.monotonic() + 8.0
+        self._pipe.deadline = deadline                 # bounds the blocking reads below too
+        self._pipe.send(1, frame)
         while time.monotonic() < deadline:
             op, data = self._pipe.recv()
             if op == 2:                                    # CLOSE
@@ -164,22 +185,28 @@ class _Discord:
         p = _Pipe()
         if not p.connect():
             raise OSError("Discord isn't running")
+        self._drop()            # never overwrite a live _Pipe — its raw HANDLE would leak
         self._pipe = p
+        p.deadline = time.monotonic() + 8.0
         p.send(0, {"v": 1, "client_id": self.client_id})   # HANDSHAKE
         p.recv()                                            # READY
         return p
 
     def _connect(self) -> None:
         self._handshake()
-        if not self.token:
-            raise NeedsAuth()
         try:
-            self._cmd_once("AUTHENTICATE", {"access_token": self.token})
-        except OSError:
-            if self.refresh and self._refresh_token():
-                self._cmd_once("AUTHENTICATE", {"access_token": self.token})
-            else:
+            if not self.token:
                 raise NeedsAuth()
+            try:
+                self._cmd_once("AUTHENTICATE", {"access_token": self.token})
+            except OSError:
+                if self.refresh and self._refresh_token():
+                    self._cmd_once("AUTHENTICATE", {"access_token": self.token})
+                else:
+                    raise NeedsAuth()
+        except BaseException:
+            self._drop()        # _ensure() retries while _authed is False: without this every
+            raise               # retry opens (and abandons) another kernel pipe handle
         self._authed = True
 
     def _ensure(self) -> None:
