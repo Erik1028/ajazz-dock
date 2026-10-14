@@ -144,6 +144,12 @@ class AKP03:
         self._initialized = False
         self.image_rotation = 90
         self.image_mirror = False
+        # Frame tap for dock/mirror.py (Orbit's VR panel): the JPEGs the keys show, exactly as sent,
+        # committed by flush(). One tuple swap per flush, so another thread reads the old or the new
+        # set, never half of each. None = a cleared key.
+        self.mirror = (0, (None,) * LCD_KEYS)
+        self.mirror_dark = False                  # sleep() turned the backlight off
+        self._mx_pending: dict = {}
 
     # ---- connection --------------------------------------------------------
     @staticmethod
@@ -215,11 +221,13 @@ class AKP03:
         a key/button press still reaches the app; call wake() (or any render) to bring it back."""
         self._ensure_init()
         self._write(self._cmd(b"HAN"))
+        self.mirror_dark = True
 
     def wake(self) -> None:
         """Re-assert display power (DIS) after sleep(). The caller restores brightness + re-renders."""
         self._ensure_init()
         self._write(self._cmd(b"DIS"))
+        self.mirror_dark = False
 
     def set_key_image(self, key: int, jpeg: bytes) -> None:
         """Upload a JPEG (from encode_key_image) to LCD key 0..5. Call flush() after."""
@@ -234,6 +242,7 @@ class AKP03:
             buf = bytearray(REPORT_LEN)
             buf[1:1 + len(chunk)] = chunk
             self._write(bytes(buf))
+        self._mx_pending[key] = jpeg
 
     def set_key_pil(self, key: int, img: Image.Image,
                     quality: int = 95, subsampling: int = 0,
@@ -244,14 +253,24 @@ class AKP03:
     def clear_key(self, key: int) -> None:
         self._ensure_init()
         self._write(self._cmd(b"CLE", bytes([0x00, 0x00, 0x00, key + 1])))
+        self._mx_pending[key] = None
 
     def clear_all(self) -> None:
         self._ensure_init()
         self._write(self._cmd(b"CLE", bytes([0x00, 0x00, 0x00, 0xFF])))
+        for k in range(LCD_KEYS):
+            self._mx_pending[k] = None
 
     def flush(self) -> None:
         """Commit written images to the screen (required)."""
         self._write(self._cmd(b"STP"))
+        if self._mx_pending:
+            gen, keys = self.mirror
+            keys = list(keys)
+            for k, jpeg in self._mx_pending.items():
+                keys[k] = jpeg
+            self._mx_pending = {}
+            self.mirror = (gen + 1, tuple(keys))
 
     # ---- input -------------------------------------------------------------
     def read_event(self, timeout_ms: int = 200) -> Optional[Event]:

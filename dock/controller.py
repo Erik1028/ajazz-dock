@@ -1,6 +1,7 @@
 """DockController: bind device input events to actions and render pages."""
 from __future__ import annotations
 
+import collections
 import json
 import math
 import sys
@@ -67,6 +68,29 @@ def _log_debug(msg: str) -> None:
         pass
 
 
+def remote_event(input_id: str, down: Optional[bool], turn: int) -> Optional[Event]:
+    """'key3' + down -> Event('key', 2, ...), 'btn7' -> button 6, 'enc1' + turn -> encoder_turn 1."""
+    try:
+        if input_id.startswith("key") and down is not None:
+            i = int(input_id[3:]) - 1
+            if 0 <= i < len(LCD_KEYS):
+                return Event("key", i, bool(down))
+        elif input_id.startswith("btn") and down is not None:
+            i = int(input_id[3:]) - 1
+            if 6 <= i <= 8:
+                return Event("button", i, bool(down))
+        elif input_id.startswith("enc"):
+            i = int(input_id[3:])
+            if 0 <= i <= 2:
+                if turn:
+                    return Event("encoder_turn", i, delta=1 if turn > 0 else -1)
+                if down is not None:
+                    return Event("encoder_push", i, bool(down))
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
 class DockController:
     def __init__(self, config: Optional[Config] = None,
                  on_status: Optional[Callable[[], None]] = None) -> None:
@@ -113,6 +137,13 @@ class DockController:
         self._hud_clock = time.time           # the HUD session clock (a test drives a fake one)
         self._last_input = time.time()        # last dock input (for the idle/ambient timer)
         self._ambient = None                  # ambient/idle screen state (or None when awake)
+        # Orbit's VR panel (dock/mirror.py): its presses are queued here and handled on the loop
+        # thread like the dock's own (HID writes are single-threaded); a wake request leaves the idle
+        # screen without firing anything; on_input echoes the dock's PHYSICAL inputs (loop thread).
+        self._remote = collections.deque()
+        self._wake_requested = False
+        self.mirror_clients = 0               # connected panels -> the loop polls faster while > 0
+        self.on_input: Optional[Callable[[Event], None]] = None
         self._retries = 0                     # consecutive failed reconnect scans (backoff)
         self._has_live = False                # current page has at least one live/dynamic key
         self._live_last = 0.0                 # last live-key refresh timestamp
@@ -437,6 +468,7 @@ class DockController:
             try:
                 self._service_requests()
                 self._check_gestures()
+                self._drain_remote()
                 # Spin faster while an animation/wallpaper/calibration runs, or while a gesture is
                 # pending (a held key awaiting hold, or a tap awaiting a possible double) so the
                 # 0.5s hold / 0.28s double resolve promptly. 10ms = true per-frame animations; the
@@ -475,8 +507,15 @@ class DockController:
                     timeout = 1000
                 else:
                     timeout = 200
+                if self.mirror_clients > 0:             # a VR panel is watching: its presses must not
+                    timeout = min(timeout, 25)          # wait out a 200 ms / 1 s read (hold = 0.5 s)
                 ev = self.dock.read_event(timeout_ms=timeout)
                 if ev:
+                    if self.on_input is not None:
+                        try:
+                            self.on_input(ev)
+                        except Exception as e:
+                            _log_error("mirror echo", e)
                     self._handle_event(ev)
             except OSError:
                 # device was unplugged / I/O error -> drop and retry
@@ -488,6 +527,31 @@ class DockController:
                 # (e.g. the calibration pattern) freezes on screen and input dies. Log + go on.
                 _log_error("loop", e)
                 time.sleep(0.05)
+
+    # ---- remote input (Orbit's VR panel, dock/mirror.py) --------------------
+    def inject(self, input_id: str, down: Optional[bool] = None, turn: int = 0) -> bool:
+        """Queue an input as if the dock sent it: key1..key6 / btn7..btn9 / enc0..enc2 with
+        down=True/False (press and release, so hold and double-tap work as on the device), or
+        turn=+1/-1 on an encoder. Any thread; the loop handles it. False = not a valid input."""
+        ev = remote_event(input_id, down, turn)
+        if ev is None:
+            return False
+        self._remote.append(ev)
+        return True
+
+    def request_wake(self) -> None:
+        """A VR pointer arrived: leave the idle screen and reset the idle timer, fire nothing (else
+        the first real press would only wake the screen and be swallowed)."""
+        self._wake_requested = True
+
+    def _drain_remote(self) -> None:
+        if self._wake_requested:
+            self._wake_requested = False
+            self._last_input = time.time()
+            if self._ambient is not None:
+                self._wake_ambient()
+        while self._remote:
+            self._handle_event(self._remote.popleft())
 
     def _try_connect(self) -> bool:
         try:
@@ -1563,6 +1627,14 @@ class DockController:
             "page_count": len(pages),
             "page_name": pages[self.page_index % len(pages)].get("name") if pages else "",
             "brightness": self.config.brightness,
+            # api 1 (the mirror pipe): where in the folders, screen on/off, idle screen up
+            "api": 1,
+            "folder": self._folder,
+            "folder_name": (self.config.folders_of().get(self._folder) or {}).get("name", "") if self._folder else "",
+            "folder_page": self._folder_page,
+            "folder_pages": self._folder_page_count() if self._folder else 0,
+            "display_on": self._display_on,
+            "ambient": self._ambient is not None,
         }
 
     def _set_connected(self, value: bool) -> None:

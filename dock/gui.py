@@ -7363,6 +7363,19 @@ def main():
     bridge = Bridge()
     controller.on_status = lambda: bridge.status.emit()
 
+    # Hexpad_mirror_v1: what the dock shows, for Orbit's VR panel (a separate pipe - the IPC above
+    # stays exactly as it was). Never let it stop the app from starting.
+    mirror = None
+    try:
+        from .mirror import MirrorServer
+        mirror = MirrorServer(controller, summary=_action_summary, short=_CTRL_SHORT)
+        if not mirror.start():
+            mirror = None
+    except Exception as e:
+        from .controller import _log_error
+        _log_error("mirror start", e)
+        mirror = None
+
     # Lazy configurator: on the autostart/tray path (start_hidden) the window is never shown, so
     # defer building its ~500 widgets until the user first opens it — the tray appears sooner and
     # ~20 MB isn't spent mirroring an off-screen UI on every 24/7 login.
@@ -7396,6 +7409,11 @@ def main():
         w = _win["w"]
         if w is not None:
             w._quitting = True
+        try:
+            if mirror is not None:
+                mirror.stop()
+        except Exception:
+            pass
         try:
             controller.stop()
         finally:
