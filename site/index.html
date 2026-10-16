@@ -14,7 +14,7 @@
 <meta property="og:image" content="https://erik1028.github.io/ajazz-dock/og.png">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="theme-color" content="#0b0b0e">
-<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Hexpad", "url": "https://erik1028.github.io/ajazz-dock/", "description": "A lean, native Windows app for the Ajazz AKP03E stream dock: any action on its keys, buttons and knobs, live keys, idle clock screens and integrations.", "image": "https://erik1028.github.io/ajazz-dock/og.png", "operatingSystem": "Windows 10, Windows 11", "applicationCategory": "UtilitiesApplication", "isAccessibleForFree": true, "inLanguage": "en", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "author": {"@type": "Person", "name": "Erik1028", "url": "https://github.com/Erik1028"}, "sameAs": ["https://github.com/Erik1028/ajazz-dock"]}</script>
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Hexpad", "url": "https://erik1028.github.io/ajazz-dock/", "description": "A lean, native Windows app for the Ajazz AKP03E stream dock: any action on its keys, buttons and knobs, live keys, idle clock screens and integrations.", "image": "https://erik1028.github.io/ajazz-dock/og.png", "operatingSystem": "Windows 10, Windows 11", "applicationCategory": "UtilitiesApplication", "softwareVersion": "2.0.0", "downloadUrl": "https://github.com/Erik1028/ajazz-dock/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "inLanguage": "en", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "author": {"@type": "Person", "name": "Erik1028", "url": "https://github.com/Erik1028"}, "sameAs": ["https://github.com/Erik1028/ajazz-dock"]}</script>
 <link rel="icon" href="favicon.png" type="image/png">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -33,8 +33,8 @@
 <h1>Hexpad</h1>
 <p>A lean Windows app for the <strong>Ajazz AKP03E</strong> stream dock. Every key, button and knob does what you tell it, and the keys can show live numbers. A real desktop app: no browser inside, no account, no telemetry.</p>
 <div class="get">
-<a class="btn" id="dl" href="#install"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg><span>How to install</span></a>
-<span class="mono" id="ver">Windows 10 / 11 · free</span>
+<a class="btn" id="dl" href="https://github.com/Erik1028/ajazz-dock/releases/download/v2.0.0/Hexpad-2.0.0.zip"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg><span>Download for Windows</span></a>
+<span class="mono" id="ver">v2.0.0 · 16 Oct 2026</span>
 </div>
 </div>
 
@@ -92,19 +92,22 @@
 </section>
 
 <section class="block two" id="install" data-reveal>
-<div><h2>Install</h2><p class="lede">You build it once from the source; it takes a few minutes.</p></div>
+<div><h2>Install</h2><p class="lede">Unzip and run: no installer, no Python.</p></div>
 <div>
 <ol>
-<li>Install <a href="https://www.python.org/downloads/windows/">Python 3</a>, then <a href="https://github.com/Erik1028/ajazz-dock/archive/refs/heads/main.zip">download the source</a> and unzip it.</li>
-<li>Open PowerShell in that folder and run:
+<li><a id="dl2" href="https://github.com/Erik1028/ajazz-dock/releases/download/v2.0.0/Hexpad-2.0.0.zip">Download <span class="fname">Hexpad-2.0.0.zip</span><span class="size"> (69 MB)</span></a> and unzip it anywhere.</li>
+<li>Run <code>Hexpad\Hexpad.exe</code> and plug in the dock. Hexpad lives in the tray: right-click its icon for the configurator and <i>Start with Windows</i>.</li>
+</ol>
+<p class="aside">Needs Windows 10 or 11 and an <strong>Ajazz AKP03E</strong> (USB ID <code>0300:3002</code>), the only dock it supports. Hexpad runs with administrator rights so it can read CPU and GPU temperatures: Windows asks when you start it by hand, the start-with-Windows task doesn't. SmartScreen may warn, because Hexpad isn't signed: <i>More info › Run anyway</i>. The weather comes from Open-Meteo. Settings are a plain JSON file in <code>%APPDATA%\AjazzDock</code>, so they stay when you replace the folder with a newer version.</p>
+<details class="aside src">
+<summary>Or build it from the source</summary>
+<p>With <a href="https://www.python.org/downloads/windows/">Python 3</a> installed, <a href="https://github.com/Erik1028/ajazz-dock/archive/refs/heads/main.zip">download the source</a>, unzip it, open PowerShell in that folder and run:</p>
 <pre><code>py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre></li>
-<li>That builds <code>Hexpad.exe</code> (no Python needed to run it), copies it to <code>%LOCALAPPDATA%\Hexpad</code>, adds Start menu and desktop shortcuts, starts it with Windows and opens it. It lives in the tray; right-click the icon for the configurator.</li>
-</ol>
-<p class="aside">Needs Windows 10 or 11 and an <strong>Ajazz AKP03E</strong> (USB ID <code>0300:3002</code>), the only dock it supports. Hexpad runs with administrator rights so it can read CPU and GPU temperatures: Windows asks when you start it by hand, the start-with-Windows task doesn't. The weather comes from Open-Meteo. Settings are a plain JSON file in <code>%APPDATA%\AjazzDock</code>; <code>uninstall.ps1</code> removes the app and keeps them.</p>
-<p class="aside" id="oldbuild">There's no ready-made Hexpad download yet. The <a href="https://github.com/Erik1028/ajazz-dock/releases/tag/v1.0.0">1.0.0 release</a> (<code>AjazzDock.exe</code>, June 2026) is from before the rename: it has keys, actions, pages and profiles, but none of the live keys, idle screens or integrations above.</p>
+powershell -ExecutionPolicy Bypass -File .uild.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre>
+<p>That builds the <code>Hexpad</code> folder with <code>Hexpad.exe</code>, copies it to <code>%LOCALAPPDATA%\Hexpad</code>, adds Start menu and desktop shortcuts, starts it with Windows and opens it. <code>uninstall.ps1</code> removes the app and keeps your settings.</p>
+</details>
 </div>
 </section>
 
@@ -112,8 +115,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre></li>
 
 <footer>
 <div class="wrap">
-<p>Hexpad by <a href="https://github.com/Erik1028">Erik1028</a>. Free, with the source on GitHub. The dock protocol comes from <a href="https://github.com/4ndv/mirajazz">4ndv/mirajazz</a> and <a href="https://github.com/4ndv/opendeck-akp03">opendeck-akp03</a>. Not affiliated with Ajazz.</p>
-<span><a href="https://erik1028.github.io/">More apps</a> · <a href="https://github.com/Erik1028/ajazz-dock">Source</a></span>
+<p>Hexpad by <a href="https://github.com/Erik1028">Erik1028</a>. Free and open source, MIT license. The dock protocol comes from <a href="https://github.com/4ndv/mirajazz">4ndv/mirajazz</a> and <a href="https://github.com/4ndv/opendeck-akp03">opendeck-akp03</a>. Not affiliated with Ajazz.</p>
+<span><a href="https://erik1028.github.io/">More apps</a> · <a href="https://github.com/Erik1028/ajazz-dock">Source</a> · <a href="https://github.com/Erik1028/ajazz-dock/releases">Releases</a></span>
 </div>
 </footer>
 

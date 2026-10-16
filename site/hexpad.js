@@ -1,6 +1,6 @@
 // The dock in the hero: the chips switch what its keys show (cross-fading two images, turning the knobs a
-// little), and until someone picks one it steps through them by itself. Plus: if a Hexpad build is ever
-// published as a release, the button points at it.
+// little), and until someone picks one it steps through them by itself. Plus: the download links follow the
+// newest release.
 (function () {
   var a = document.getElementById('screen-a'), b = document.getElementById('screen-b');
   var chips = Array.prototype.slice.call(document.querySelectorAll('.screens button'));
@@ -44,8 +44,9 @@
 })();
 
 (function () {
-  // Today the only release is 1.0.0 (AjazzDock.exe, from before the rename), so the page sends people to
-  // the build steps. Once a release carries a Hexpad build, link it and drop the note about 1.0.0.
+  // The download links point at the newest release's Hexpad zip. The HTML already carries 2.0.0's link, version
+  // and size, so a failed or rate-limited request (60 an hour per visitor) leaves those in place.
+  function mb(n) { return n >= 1048576 * 10 ? Math.round(n / 1048576) + ' MB' : (Math.round(n / 104857.6) / 10) + ' MB'; }
   fetch('https://api.github.com/repos/Erik1028/ajazz-dock/releases?per_page=10')
     .then(function (r) { return r.ok ? r.json() : null; })
     .then(function (list) {
@@ -54,12 +55,17 @@
       if (!rel) return;
       var asset = (rel.assets || []).filter(function (x) { return /hexpad.*\.(exe|zip)$/i.test(x.name); })[0];
       if (!asset) return;
-      var dl = document.getElementById('dl'), ver = document.getElementById('ver'), old = document.getElementById('oldbuild');
-      dl.href = asset.browser_download_url;
-      dl.querySelector('span').textContent = 'Download for Windows';
+      ['dl', 'dl2'].forEach(function (id) {
+        var a = document.getElementById(id);
+        if (!a) return;
+        a.href = asset.browser_download_url;
+        var f = a.querySelector('.fname'), sz = a.querySelector('.size');
+        if (f) f.textContent = asset.name;
+        if (sz && asset.size) sz.textContent = ' (' + mb(asset.size) + ')';
+      });
+      var ver = document.getElementById('ver');
       var d = rel.published_at ? new Date(rel.published_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
       if (ver) ver.textContent = rel.tag_name + (d ? ' · ' + d : '');
-      if (old) old.hidden = true;
     })
     .catch(function () {});
 })();
