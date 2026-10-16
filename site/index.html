@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hexpad · an app for the Ajazz AKP03E stream dock</title>
+<meta name="description" content="A lean, native Windows app for the Ajazz AKP03E stream dock: put any action on its keys, buttons and knobs, show live numbers on the keys, and a clock when it's idle. No account, no telemetry.">
+<link rel="canonical" href="https://erik1028.github.io/ajazz-dock/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Erik1028">
+<meta property="og:url" content="https://erik1028.github.io/ajazz-dock/">
+<meta property="og:title" content="Hexpad">
+<meta property="og:description" content="A lean Windows app for the Ajazz AKP03E stream dock: any action on any key or knob, live keys and idle clock screens.">
+<meta property="og:image" content="https://erik1028.github.io/ajazz-dock/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#0b0b0e">
+<script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Hexpad", "url": "https://erik1028.github.io/ajazz-dock/", "description": "A lean, native Windows app for the Ajazz AKP03E stream dock: any action on its keys, buttons and knobs, live keys, idle clock screens and integrations.", "image": "https://erik1028.github.io/ajazz-dock/og.png", "operatingSystem": "Windows 10, Windows 11", "applicationCategory": "UtilitiesApplication", "isAccessibleForFree": true, "inLanguage": "en", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "author": {"@type": "Person", "name": "Erik1028", "url": "https://github.com/Erik1028"}, "sameAs": ["https://github.com/Erik1028/ajazz-dock"]}</script>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="band">
+<header class="top">
+<div class="wrap">
+<a class="logo" href="#top"><img src="favicon.png" width="30" height="30" alt="">Hexpad</a>
+<nav aria-label="Sections"><a class="opt" href="#features">Features</a><a href="#install">Install</a><a class="opt" href="https://github.com/Erik1028/ajazz-dock">GitHub</a></nav>
+</div>
+</header>
+
+<section class="intro wrap" id="top">
+<div class="pitch">
+<h1>Hexpad</h1>
+<p>A lean Windows app for the <strong>Ajazz AKP03E</strong> stream dock. Every key, button and knob does what you tell it, and the keys can show live numbers. A real desktop app: no browser inside, no account, no telemetry.</p>
+<div class="get">
+<a class="btn" id="dl" href="#install"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12M6 10l6 6 6-6M4 21h16"/></svg><span>How to install</span></a>
+<span class="mono" id="ver">Windows 10 / 11 · free</span>
+</div>
+</div>
+
+<div class="stage">
+<div class="dock" id="dock">
+<div class="screen"><img id="screen-a" src="img/keys-home.webp" width="564" height="370" alt="The six keys: live CPU load, mic state, an app folder, the weather, play/pause and a screenshot key"><img id="screen-b" src="img/keys-home.webp" width="564" height="370" alt="" aria-hidden="true"></div>
+<div class="knob big" aria-hidden="true"><i></i></div>
+<div class="btns" aria-hidden="true"><span></span><span></span><span></span></div>
+<div class="smalls" aria-hidden="true"><span class="knob"><i></i></span><span class="knob"><i></i></span></div>
+</div>
+<div class="screens" role="group" aria-label="What the keys show">
+<button type="button" aria-pressed="true" data-src="img/keys-home.webp" data-alt="The six keys: live CPU load, mic state, an app folder, the weather, play/pause and a screenshot key">Keys</button>
+<button type="button" aria-pressed="false" data-src="img/idle-synthwave.webp" data-alt="Idle screen: Synthwave clock">Synthwave</button>
+<button type="button" aria-pressed="false" data-src="img/idle-aurora.webp" data-alt="Idle screen: Aurora clock">Aurora</button>
+<button type="button" aria-pressed="false" data-src="img/idle-matrix.webp" data-alt="Idle screen: Matrix rain clock">Matrix</button>
+<button type="button" aria-pressed="false" data-src="img/idle-flip.webp" data-alt="Idle screen: split-flap clock">Flip clock</button>
+<button type="button" aria-pressed="false" data-src="img/idle-nixie.webp" data-alt="Idle screen: Nixie tube clock">Nixie</button>
+<button type="button" aria-pressed="false" data-src="img/idle-lava.webp" data-alt="Idle screen: lava lamp clock">Lava lamp</button>
+<button type="button" aria-pressed="false" data-src="img/idle-weather.webp" data-alt="Idle screen: the weather">Weather</button>
+</div>
+<p class="cap">Drawn by Hexpad's own renderer, with made-up data.</p>
+</div>
+</section>
+</div>
+
+<main class="wrap">
+
+<figure class="hero-shot" data-reveal>
+<a class="shot" href="img/configurator.webp" title="Open full size"><img src="img/configurator.webp" width="1440" height="980" alt="The Hexpad configurator: the dock drawn in the middle with its keys and knobs, the selected key's settings below and the list of actions on the right" loading="lazy"></a>
+<figcaption>The configurator is laid out like the dock. Click a key or knob, or drag an action onto it. (A demo layout, no dock plugged in.)</figcaption>
+</figure>
+
+<section class="block" id="features">
+<h2>What it does</h2>
+<div class="cards" data-stagger="110">
+<article class="card"><div class="shot"><img src="img/knobs.webp" width="655" height="410" alt="The dock in the configurator with the big knob selected" loading="lazy"></div><h3>Every key, button and knob</h3><p>Six screen keys, three round buttons and three knobs that turn both ways and push. A key can do one thing on a tap, another on a double tap and a third when you hold it. Keys and knobs can change with the page; the round buttons stay the same on every page.</p></article>
+<article class="card"><div class="shot"><img src="img/live-styles.webp" width="564" height="370" alt="Six live keys showing GPU load in six different styles" loading="lazy"></div><h3>Live keys</h3><p>A key can show a number that updates every second: CPU, GPU and RAM load, temperatures, GPU memory, network, ping, battery, the time, the mic and Caps Lock state, what's playing with its cover, and the weather. Seven tile styles.</p></article>
+<article class="card"><div class="shot"><img src="img/idle-mosaic.webp" width="761" height="502" alt="Four idle clock designs: synthwave, split-flap, aurora and Nixie tubes" loading="lazy"></div><h3>Idle screens</h3><p>Leave the dock alone and it dims to a clock spread across all six keys: 16 designs, 10 of them animated, and one that follows the real sun. What's playing and the weather take turns with the clock.</p></article>
+</div>
+</section>
+
+<section class="block" id="actions" data-reveal>
+<h2>Actions</h2>
+<dl class="acts">
+<div><dt>Apps and files</dt><dd>Open any app, file, folder or web page.</dd></div>
+<div><dt>Keyboard and text</dt><dd>Send a shortcut (record it by pressing the keys, or a mouse button), type text, or send Substance 3D Painter shortcuts by key position so they work on any keyboard layout.</dd></div>
+<div><dt>Media and sound</dt><dd>Play/pause, next, previous. System volume, or one app's volume, on a knob, with a level bar on the keys. Mic mute. Play a sound clip to any output device.</dd></div>
+<div><dt>Streaming</dt><dd>OBS scenes, recording, streaming, the virtual camera and source volume, over OBS WebSocket.</dd></div>
+<div><dt>Smart home and RGB</dt><dd>Tapo smart bulbs straight over Wi-Fi with your TP-Link account. RGB colours, effects and brightness through <a href="https://erik1028.github.io/Prisma/">Prisma</a>.</dd></div>
+<div><dt>Windows</dt><dd>Lock, sleep, screen off, monitor brightness over DDC/CI, and quick actions like emptying the Recycle Bin, Task Manager or a screenshot snip. Discord mute, deafen and voice volume through your own Discord app ID.</dd></div>
+<div><dt>The dock itself</dt><dd>Pages, folders with their own pages, profiles and the dock's brightness. A profile or page can switch by itself when a given app comes to the front.</dd></div>
+<div><dt>Advanced</dt><dd>Multi-step macros, toggles that change their look, HTTP requests for webhooks, timers and stopwatches.</dd></div>
+</dl>
+<p class="extras">Also: 22 key-press and 6 folder animations · 1,906 emoji, Fluent icons or your own pictures, cropped in the app · one picture or an animated GIF across all six keys · hold the middle round button to switch the dock's screen off · undo and redo · backups, export and import · display calibration · unplug the dock and plug it back in, and it carries on</p>
+</section>
+
+<section class="block two" id="install" data-reveal>
+<div><h2>Install</h2><p class="lede">You build it once from the source; it takes a few minutes.</p></div>
+<div>
+<ol>
+<li>Install <a href="https://www.python.org/downloads/windows/">Python 3</a>, then <a href="https://github.com/Erik1028/ajazz-dock/archive/refs/heads/main.zip">download the source</a> and unzip it.</li>
+<li>Open PowerShell in that folder and run:
+<pre><code>py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre></li>
+<li>That builds <code>Hexpad.exe</code> (no Python needed to run it), copies it to <code>%LOCALAPPDATA%\Hexpad</code>, adds Start menu and desktop shortcuts, starts it with Windows and opens it. It lives in the tray; right-click the icon for the configurator.</li>
+</ol>
+<p class="aside">Needs Windows 10 or 11 and an <strong>Ajazz AKP03E</strong> (USB ID <code>0300:3002</code>), the only dock it supports. Hexpad runs with administrator rights so it can read CPU and GPU temperatures: Windows asks when you start it by hand, the start-with-Windows task doesn't. The weather comes from Open-Meteo. Settings are a plain JSON file in <code>%APPDATA%\AjazzDock</code>; <code>uninstall.ps1</code> removes the app and keeps them.</p>
+<p class="aside" id="oldbuild">There's no ready-made Hexpad download yet. The <a href="https://github.com/Erik1028/ajazz-dock/releases/tag/v1.0.0">1.0.0 release</a> (<code>AjazzDock.exe</code>, June 2026) is from before the rename: it has keys, actions, pages and profiles, but none of the live keys, idle screens or integrations above.</p>
+</div>
+</section>
+
+</main>
+
+<footer>
+<div class="wrap">
+<p>Hexpad by <a href="https://github.com/Erik1028">Erik1028</a>. Free, with the source on GitHub. The dock protocol comes from <a href="https://github.com/4ndv/mirajazz">4ndv/mirajazz</a> and <a href="https://github.com/4ndv/opendeck-akp03">opendeck-akp03</a>. Not affiliated with Ajazz.</p>
+<span><a href="https://erik1028.github.io/">More apps</a> · <a href="https://github.com/Erik1028/ajazz-dock">Source</a></span>
+</div>
+</footer>
+
+<script src="hexpad.js"></script>
+<script src="motion.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+/* Hexpad: the app icon's colours - a dark slab (#0b0b0e) with keys cut from one spectrum,
+   violet #8d3cdf -> pink #e3479d -> coral #f26375 -> orange #f87c58. */
+:root{
+  color-scheme:dark;
+  --bg:#0b0b0e; --panel:#15151b; --line:#26262f; --text:#eeedf2; --dim:#a19fae;
+  --accent:#f26375; --on-accent:#fff; --accent-soft:rgba(242,99,117,.14); --ok:#35e08a;
+  --spectrum:linear-gradient(90deg,#8d3cdf,#e3479d 45%,#f26375 70%,#f87c58);
+  --sans:"Segoe UI Variable Text","Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --display:"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,"SF Mono",Menlo,monospace;
+}
+/* Shared layout of Erik1028's app pages: a short manual, one column, real screenshots.
+   Each page puts its app's own colours in :root above this. */
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:17px;line-height:1.6;-webkit-font-smoothing:antialiased}
+img{max-width:100%;height:auto;display:block}
+a{color:var(--text);text-decoration:underline;text-decoration-color:var(--accent);text-decoration-thickness:2px;text-underline-offset:3px}
+a:hover{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+h1,h2,h3{font-family:var(--display);margin:0;line-height:1.15;text-wrap:balance}
+h2{font-size:clamp(24px,3.2vw,32px);font-weight:700}
+h3{font-size:18px;font-weight:600}
+p{margin:0}
+code,.mono{font-family:var(--mono)}
+code{font-size:.88em;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:1px 6px;overflow-wrap:anywhere}
+.wrap{max-width:1120px;margin:0 auto;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
+
+.top .wrap{display:flex;align-items:center;gap:20px;padding-block:18px}
+.logo{display:flex;align-items:center;gap:10px;font-family:var(--display);font-weight:700;font-size:19px;text-decoration:none}
+.logo img{border-radius:8px}
+.top nav{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:15px}
+.top nav a{text-decoration:none;color:var(--dim)}
+.top nav a:hover{color:var(--text)}
+@media (max-width:640px){.top nav .opt{display:none}}
+
+.intro h1{font-size:clamp(40px,6.4vw,72px);font-weight:700;letter-spacing:-0.02em}
+.intro p{font-size:clamp(18px,2vw,21px);color:var(--dim);max-width:34em;margin-top:14px}
+.get{display:flex;flex-direction:column;gap:10px;align-items:flex-start}
+.btn{display:inline-flex;align-items:center;gap:10px;background:var(--accent);color:var(--on-accent);font-weight:700;font-size:17px;text-decoration:none;padding:13px 22px;border-radius:12px}
+.btn:hover{color:var(--on-accent);filter:brightness(1.1)}
+.get .mono{color:var(--dim);font-size:14px}
+
+.shot{border-radius:14px;overflow:hidden;border:1px solid var(--line);background:var(--panel)}
+.hero-shot figcaption,.cap{margin-top:10px;color:var(--dim);font-size:14px}
+
+section.block{padding-block:64px 0}
+.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;margin-top:24px}
+.card{display:flex;flex-direction:column;gap:10px;min-width:0}
+.card .shot{aspect-ratio:16/10;max-width:100%}
+.card .shot img{width:100%;height:100%;object-fit:cover;object-position:top left}
+.card p{color:var(--dim);font-size:16px}
+.extras{margin-top:22px;color:var(--dim);font-size:15.5px}
+@media (max-width:820px){.cards{grid-template-columns:1fr}}
+
+.two{display:grid;grid-template-columns:minmax(0,4fr) minmax(0,7fr);gap:24px 56px}
+.two ol{margin:0;padding-left:1.3em;display:flex;flex-direction:column;gap:10px}
+.two ol li::marker{font-family:var(--mono);color:var(--accent)}
+.aside{color:var(--dim);font-size:15.5px;margin-top:18px;padding-top:14px;border-top:1px solid var(--line)}
+@media (max-width:820px){.two{grid-template-columns:1fr}}
+
+footer{margin-top:80px;border-top:1px solid var(--line)}
+footer .wrap{padding-block:28px 44px;display:flex;flex-wrap:wrap;gap:12px 32px;justify-content:space-between;color:var(--dim);font-size:14.5px}
+footer p{max-width:42em}
+
+/* ---- Hexpad only: the dock itself in the hero, its keys switching between what it can show ---- */
+.band{position:relative;overflow:hidden;isolation:isolate}
+.band::before{content:"";position:absolute;z-index:-1;width:900px;height:620px;right:-160px;top:-120px;
+  background:radial-gradient(closest-side,rgba(227,71,157,.20),rgba(141,60,223,.10) 55%,transparent);filter:blur(10px)}
+.intro{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);gap:40px 56px;align-items:center;padding-block:40px 24px}
+.intro h1{font-size:clamp(52px,8vw,96px);letter-spacing:-0.035em;background:var(--spectrum);-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:.06em}
+.intro p strong{color:var(--text);font-weight:600}
+.get{margin-top:28px}
+.btn{background:var(--spectrum);box-shadow:0 10px 30px rgba(227,71,157,.30)}
+@media (max-width:900px){.intro{grid-template-columns:1fr}}
+
+/* the dock: keys 2x3 on the left, round buttons under them, a big knob and two small ones on the right
+   (the same arrangement the configurator draws) */
+.dock{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"screen big" "btns smalls";gap:16px 22px;align-items:center;
+  padding:22px 24px 18px;border-radius:26px;background:linear-gradient(160deg,#1c1c22,#0f0f13 55%,#0b0b0e);
+  border:1px solid #2b2b33;box-shadow:0 40px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06)}
+.screen{grid-area:screen;position:relative;border-radius:8px;overflow:hidden;background:#000;box-shadow:0 0 0 3px #050506,0 0 40px rgba(242,99,117,.10)}
+.screen img{width:100%;height:auto;transition:opacity .45s ease}
+.screen img + img{position:absolute;inset:0;opacity:0}
+.knob{display:block;position:relative;border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a3a44,#17171c 62%,#0d0d10);
+  box-shadow:0 6px 14px rgba(0,0,0,.55),inset 0 1px 1px rgba(255,255,255,.12),0 0 0 2px #0a0a0c;transition:transform .7s cubic-bezier(.2,.7,.2,1)}
+.knob i{position:absolute;left:50%;top:9%;width:3px;height:22%;margin-left:-1.5px;border-radius:2px;background:#cfcfd8}
+.knob.big{grid-area:big;width:clamp(78px,10vw,112px);aspect-ratio:1}
+.smalls{grid-area:smalls;display:flex;gap:14px;justify-content:center}
+.smalls .knob{width:clamp(40px,4.6vw,52px);aspect-ratio:1}
+.btns{grid-area:btns;display:grid;grid-template-columns:repeat(3,1fr);justify-items:center}
+.btns span{width:clamp(30px,3.4vw,40px);aspect-ratio:1;border-radius:50%;background:radial-gradient(circle at 40% 35%,#26262d,#111115);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 2px #08080a}
+.screens{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+.screens button{font:inherit;font-size:14px;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 13px;cursor:pointer}
+.screens button:hover{color:var(--text);border-color:#3a3a46}
+.screens button[aria-pressed="true"]{color:#fff;border-color:transparent;background:var(--spectrum)}
+.intro .stage .cap{margin-top:12px;font-size:14px;max-width:none}
+.card .shot{aspect-ratio:3/2}
+.card .shot img{object-position:center}
+
+.hero-shot{margin:40px 0 0}
+.hero-shot .shot{border-radius:18px;border-color:#2b2b33;box-shadow:0 40px 90px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04)}
+
+.acts{margin:24px 0 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 48px}
+.acts div{padding:14px 0;border-top:1px solid var(--line)}
+.acts dt{font-weight:600}
+.acts dd{margin:4px 0 0;color:var(--dim);font-size:16px}
+@media (max-width:820px){.acts{grid-template-columns:1fr}}
+.lede{color:var(--dim);margin-top:10px}
+pre{margin:10px 0 0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;font-size:14px;line-height:1.55}
+pre code{background:none;border:0;padding:0;font-size:inherit;overflow-wrap:normal}
+.card .shot img{transition:transform .5s cubic-bezier(.2,.7,.2,1)}
+.card:hover .shot img{transform:scale(1.04)}
+@media (prefers-reduced-motion:reduce){.card .shot img,.screen img,.knob{transition:none}}
+@media (max-width:640px){.dock{padding:16px 16px 14px;gap:12px 14px;border-radius:20px}.intro{padding-top:24px}}
+
+/* scroll motion (motion.js): only when the script runs and motion is allowed */
+.motion [data-reveal]{transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0ms)}
+.motion [data-reveal].pre{opacity:0;transform:translateY(40px)}
+.motion .card.done{transition:none}
+a.shot{display:block}
