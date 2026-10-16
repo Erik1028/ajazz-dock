@@ -104,7 +104,7 @@
 <p>With <a href="https://www.python.org/downloads/windows/">Python 3</a> installed, <a href="https://github.com/Erik1028/ajazz-dock/archive/refs/heads/main.zip">download the source</a>, unzip it, open PowerShell in that folder and run:</p>
 <pre><code>py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-powershell -ExecutionPolicy Bypass -File .uild.ps1
+powershell -ExecutionPolicy Bypass -File .\build.ps1
 powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre>
 <p>That builds the <code>Hexpad</code> folder with <code>Hexpad.exe</code>, copies it to <code>%LOCALAPPDATA%\Hexpad</code>, adds Start menu and desktop shortcuts, starts it with Windows and opens it. <code>uninstall.ps1</code> removes the app and keeps your settings.</p>
 </details>
