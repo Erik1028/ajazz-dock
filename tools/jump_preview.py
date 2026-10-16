@@ -1,4 +1,5 @@
 """Lay out the Jump animation frames in a grid to judge the arc (smoothness/speed)."""
+import os
 from PIL import Image
 from dock.images import render_face, press_frames
 
@@ -17,6 +18,6 @@ for i, f in enumerate(frames):
     x = GAP + c * (cell + GAP)
     y = GAP + r * (cell + GAP)
     sheet.paste(f.resize((cell, cell), Image.NEAREST), (x, y))
-out = r"C:\Users\Erik\Desktop\project\ajazz-dock\assets\jump_grid.png"
+out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "jump_grid.png")
 sheet.save(out)
 print("saved", out, "frames", len(frames))

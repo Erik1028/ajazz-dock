@@ -19,7 +19,7 @@ app.setStyleSheet(QSS)
 
 win = ConfigWindow(DockController(Config(default_config())))
 win.show()
-ASSETS = r"C:\Users\Erik\Desktop\project\ajazz-dock\assets"
+ASSETS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets")
 
 
 def trigger():

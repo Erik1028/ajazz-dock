@@ -1,4 +1,5 @@
 """Render a montage of every press animation (rows) x frames (cols) for visual QA."""
+import os
 from PIL import Image, ImageDraw
 from dock.images import render_face, press_frames, PRESS_ANIM_ORDER, PRESS_ANIM_LABELS, _font
 
@@ -31,6 +32,6 @@ for name, frames in rows:
         x += cell + GAP
     y += cell + GAP
 
-out = r"C:\Users\Erik\Desktop\project\ajazz-dock\assets\anim_montage.png"
+out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "anim_montage.png")
 sheet.save(out)
 print("saved", out, "rows", len(rows), "maxcols", maxcols)

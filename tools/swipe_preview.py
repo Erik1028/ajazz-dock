@@ -33,6 +33,6 @@ x = gap
 for g in grids:
     sheet.paste(g, (x, gap))
     x += g.width + gap
-out = r"C:\Users\Erik\Desktop\project\ajazz-dock\assets\swipe_montage.png"
+out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "swipe_montage.png")
 sheet.save(out)
 print("saved", out, "frames", len(frames))

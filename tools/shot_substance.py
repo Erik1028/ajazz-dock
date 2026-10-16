@@ -26,7 +26,7 @@ win.show()
 def grab():
     win.select("btn7")
     app.processEvents()
-    win.grab().save(r"C:\Users\Erik\Desktop\project\ajazz-dock\assets\gui_substance.png")
+    win.grab().save(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "gui_substance.png"))
     print("saved gui_substance.png; btn7 keys =",
           win.cfg.globals_of()["btn7"]["action"].get("keys"))
     app.quit()

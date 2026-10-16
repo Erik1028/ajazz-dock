@@ -13,9 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dock.config import _migrate  # noqa: E402
 
 real = os.path.join(os.environ["APPDATA"], "AjazzDock", "config.json")
-sandbox = (r"C:\Users\Erik\AppData\Local\Packages"
-           r"\PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0"
-           r"\LocalCache\Roaming\AjazzDock\config.json")
+sandbox = os.path.join(os.environ["LOCALAPPDATA"], "Packages", "PythonSoftwareFoundation.Python.3.13_qbz5n2kfra8p0",
+                       "LocalCache", "Roaming", "AjazzDock", "config.json")
 
 if not os.path.exists(sandbox):
     print("SANDBOX MISSING:", sandbox)

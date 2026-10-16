@@ -68,7 +68,7 @@ versions.
 | File | Role |
 |------|------|
 | `dock/device.py`     | Low-level AKP03 HID driver (images, brightness, input events, JPEG cache) — hardware-verified |
-| `dock/images.py`     | Renders key faces (emoji/Fluent/PNG + label) and the 15 ambient idle screens |
+| `dock/images.py`     | Renders key faces (emoji/Fluent/PNG + label) and the 16 ambient idle screens |
 | `dock/actions.py`    | Action engine (open/hotkey/text/media/volume/mic/page/profile/brightness/http/macro/toggle) |
 | `dock/actionart.py`  | Generated glyphs for actions in the picker |
 | `dock/config.py`     | JSON config: profiles → pages → bindings (+ separate Discord token file) |

@@ -339,7 +339,7 @@ def cycle(host: str, user: str, pw: str, step: int = 8, interval: float = 0.45) 
 
 # ---- credentials ---------------------------------------------------------------------------
 _LUMOS_CONFIGS = [
-    r"C:\Users\Erik\Desktop\project\Lumos\dist\config.json",
+    os.path.join(os.path.expanduser("~"), "Desktop", "project", "Lumos", "dist", "config.json"),   # a local Lumos build
     os.path.join(os.environ.get("APPDATA", ""), "Lumos", "config.json"),
 ]
 

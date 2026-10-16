@@ -6497,7 +6497,7 @@ class ConfigWindow(QMainWindow):
                 eh = QLabel("Each press rotates the RGB colour around the wheel by this much — "
                             "bind it to a dial to scroll through colours, like the bulb.", objectName="dim")
                 eh.setWordWrap(True); form.addRow(eh)
-            form.addRow("Program", line("exe", r"C:\Users\Erik\Desktop\project\RGBCommander\dist\RGBCommander.exe"))
+            form.addRow("Program", line("exe", "blank = Prisma, found by itself"))
             rh = QLabel("Sends a command to Prisma (started if needed). Make one key per scene — "
                         "a colour, effect, saved profile, brightness, or Off — or a dial for brightness.",
                         objectName="dim")

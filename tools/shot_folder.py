@@ -38,6 +38,6 @@ win.resize(1260, 820)
 win._enter_folder_edit("folder1")
 win.select("key1")
 win.show()
-out = r"C:\Users\Erik\Desktop\project\ajazz-dock\assets\gui_folder.png"
+out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "gui_folder.png")
 QTimer.singleShot(700, lambda: (win.grab().save(out), print("saved", out), app.quit()))
 app.exec()
