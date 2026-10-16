@@ -168,9 +168,9 @@ class DockController:
         self._enc_last = {}                   # encoder index -> last turn time (for acceleration)
         live.prime()                          # warm up the non-blocking CPU sampler
         try:                                  # let the bulb-state live key reach the Tapo bulb
-            from .tapo import tapo_creds
+            from .tapo import tapo_creds, bulb_host
             _e, _p = tapo_creds(self.config)
-            live.set_tapo_creds(_e, _p)
+            live.set_tapo_creds(_e, _p, bulb_host(self.config))
         except Exception:
             pass
         live.set_weather_units(self.config.data.get("weather_units", "c"))   # °C / °F

@@ -1,4 +1,4 @@
-# Build Hexpad into a single standalone Windows .exe (no Python needed to run).
+# Build Hexpad into dist\Hexpad\ (Hexpad.exe and its files; no Python needed to run).
 $root = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $vpy = Join-Path $root ".venv\Scripts\python.exe"
 

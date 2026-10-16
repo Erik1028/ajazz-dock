@@ -175,7 +175,7 @@ assert it["enc1-"]["action"]["mode"] == "hue_down" and it["enc1+"]["action"]["mo
 assert it["enc1+"]["action"]["step"] == 30
 
 # the relative-mode editor shows a Step slider (objectName sliderval readout)
-win.items()["key1"] = {"action": {"type": "smartlight", "mode": "brightness_up", "host": "192.168.0.87", "step": 10}}
+win.items()["key1"] = {"action": {"type": "smartlight", "mode": "brightness_up", "host": "192.0.2.10", "step": 10}}
 win.select("key1")
 for _ in range(2):
     app.processEvents()

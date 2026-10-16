@@ -5,4 +5,4 @@ Protocol reverse-engineered from 4ndv/mirajazz + 4ndv/opendeck-akp03 and verifie
 against real hardware.
 """
 
-__version__ = "0.1.0"
+__version__ = "2.0.0"

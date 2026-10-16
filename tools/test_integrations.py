@@ -72,17 +72,17 @@ class _Ctl:
     class config:
         data = {}
 e3 = ActionEngine(_Ctl())
-e3._smartlight({"mode": "on", "host": "192.168.0.87"}); time.sleep(0.3)
-e3._smartlight({"mode": "color", "host": "192.168.0.87", "color": "FF0000", "brightness": 60}); time.sleep(0.3)
-assert ("192.168.0.87", "on", None, None, None) in applied, applied
-assert ("192.168.0.87", "color", (0, 100, 60), 60, None) in applied, applied
+e3._smartlight({"mode": "on", "host": "192.0.2.10"}); time.sleep(0.3)
+e3._smartlight({"mode": "color", "host": "192.0.2.10", "color": "FF0000", "brightness": 60}); time.sleep(0.3)
+assert ("192.0.2.10", "on", None, None, None) in applied, applied
+assert ("192.0.2.10", "color", (0, 100, 60), 60, None) in applied, applied
 # relative encoder modes are non-blocking -> go through the coalescing nudge(), not apply()
-e3._smartlight({"mode": "brightness_up", "host": "192.168.0.87", "step": 10})
-e3._smartlight({"mode": "brightness_down", "host": "192.168.0.87", "step": 15})
-e3._smartlight({"mode": "hue_down", "host": "192.168.0.87", "step": 30})
-assert ("192.168.0.87", "bri", 10) in nudged, nudged
-assert ("192.168.0.87", "bri", -15) in nudged, nudged
-assert ("192.168.0.87", "hue", -30) in nudged, nudged
+e3._smartlight({"mode": "brightness_up", "host": "192.0.2.10", "step": 10})
+e3._smartlight({"mode": "brightness_down", "host": "192.0.2.10", "step": 15})
+e3._smartlight({"mode": "hue_down", "host": "192.0.2.10", "step": 30})
+assert ("192.0.2.10", "bri", 10) in nudged, nudged
+assert ("192.0.2.10", "bri", -15) in nudged, nudged
+assert ("192.0.2.10", "hue", -30) in nudged, nudged
 
 e2 = ActionEngine(None)
 popens = []

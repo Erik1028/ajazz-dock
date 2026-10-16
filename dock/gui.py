@@ -429,7 +429,7 @@ PRESETS = [
     {"name": "Mic mute", "binding": {"label": "Mic", "icon": "🎙️", "action": {"type": "mic", "mic": "toggle"}, "live": {"source": "mic"}}},
     {"name": "Play / Pause", "binding": {"label": "Play", "icon": "⏯️", "action": {"type": "media", "media": "play_pause"}}},
     {"name": "Mute volume", "binding": {"label": "Mute", "icon": "🔇", "action": {"type": "volume", "volume": "mute"}}},
-    {"name": "Smart light", "binding": {"label": "Light", "icon": "💡", "action": {"type": "smartlight", "mode": "toggle", "host": "192.168.0.87"}, "live": {"source": "light"}}},
+    {"name": "Smart light", "binding": {"label": "Light", "icon": "💡", "action": {"type": "smartlight", "mode": "toggle", "host": ""}, "live": {"source": "light"}}},
     {"name": "Monitors off / on", "binding": {"label": "Monitors", "icon": "🖥️", "action": {"type": "monpower", "mode": "toggle"}, "live": {"source": "monitors"}}},
     {"name": "Next page", "binding": {"label": "Next", "icon": "➡️", "action": {"type": "page", "page": "next"}}},
 ]
@@ -4074,7 +4074,8 @@ class ConfigWindow(QMainWindow):
 
     def _setup_dial(self, base, kind):
         """Fill a knob's three roles (turn-left / push / turn-right) for one-click device control."""
-        host = "192.168.0.87"
+        from .tapo import bulb_host
+        host = bulb_host(self.cfg)
         if kind == "bright":
             plan = {f"{base}-": {"type": "smartlight", "mode": "brightness_down", "host": host, "step": 10},
                     base:        {"type": "smartlight", "mode": "toggle", "host": host},
@@ -6399,7 +6400,8 @@ class ConfigWindow(QMainWindow):
             form.addRow(mh)
         elif t == "smartlight":
             if not a.get("host"):
-                a["host"] = "192.168.0.87"
+                from .tapo import bulb_host
+                a["host"] = bulb_host(self.cfg)     # the bulb the other keys use (empty until one is set up)
             modes = [("Toggle", "toggle"), ("On", "on"), ("Off", "off"),
                      ("Rainbow cycle (auto)", "cycle"),
                      ("Brightness — set", "brightness"),
@@ -6421,7 +6423,7 @@ class ConfigWindow(QMainWindow):
                 QTimer.singleShot(0, self._populate_editor)     # rebuild fields + swatch-size slider
             mc.currentIndexChanged.connect(_sl_mode)
             form.addRow("Action", mc)
-            form.addRow("Bulb IP", line("host", "192.168.0.87"))
+            form.addRow("Bulb IP", line("host", "192.168.0.x"))
 
             mode = a.get("mode")
             if mode == "brightness":
@@ -6823,8 +6825,9 @@ class ConfigWindow(QMainWindow):
             self.cfg.save()
             try:            # push into live.py like the weather/OBS dialogs do — otherwise the
                 from . import live      # bulb sampler keeps using the credentials it read at
+                from .tapo import bulb_host
                 live.set_tapo_creds(t.get("email") or None,     # startup and the tile stays dead
-                                    t.get("password") or None)
+                                    t.get("password") or None, bulb_host(self.cfg))
                 self.controller.refresh_live()
             except Exception:
                 pass
@@ -7295,7 +7298,11 @@ def main():
             if not c:
                 res = "no creds"
             else:
-                res = f"is_on={_tapo.is_on('192.168.0.87', c[0], c[1])}"
+                import json as _json
+                from .config import config_path as _cp
+                with open(_cp(), encoding="utf-8-sig") as _cf:          # read only
+                    _host = _tapo.bulb_host(_json.load(_cf))
+                res = f"is_on={_tapo.is_on(_host, c[0], c[1])}" if _host else "no bulb address in the config"
         except Exception as _e:
             res = f"ERROR {type(_e).__name__}: {_e}"
         try:

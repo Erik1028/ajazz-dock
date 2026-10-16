@@ -358,6 +358,28 @@ def import_lumos_creds() -> Optional[Tuple[str, str]]:
     return None
 
 
+def bulb_host(config) -> str:
+    """The bulb's LAN address: tapo.host in the config, else the first Smart light key that names one
+    ("" = no bulb set up yet). Nothing is built in: every user has their own bulb."""
+    try:
+        data = config.data if hasattr(config, "data") else config
+        h = ((data.get("tapo") or {}).get("host") or "").strip()
+        if h:
+            return h
+        stack = [data]
+        while stack:
+            o = stack.pop()
+            if isinstance(o, dict):
+                if o.get("type") == "smartlight" and str(o.get("host") or "").strip():
+                    return str(o["host"]).strip()
+                stack.extend(o.values())
+            elif isinstance(o, list):
+                stack.extend(o)
+    except Exception:
+        pass
+    return ""
+
+
 def tapo_creds(config) -> Tuple[Optional[str], Optional[str]]:
     """(email, password) from the AjazzDock config, auto-importing from Lumos once if empty."""
     t = config.data.setdefault("tapo", {})

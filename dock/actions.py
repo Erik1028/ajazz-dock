@@ -174,8 +174,23 @@ def _normalize_hotkey(spec: str) -> str:
 # ---- integrations: Tapo bulb (direct, via python-kasa) + Prisma (RGB) -----
 # The bulb is driven DIRECTLY over the LAN (no Lumos app needed); Prisma over its
 # Stream-Deck-style CLI (a launch with args forwards to the running instance).
-_TAPO_DEFAULT_HOST = "192.168.0.87"          # the user's Tapo L630
-_RGB_EXE = r"C:\Users\Erik\Desktop\project\RGBCommander\dist\RGBCommander.exe"
+def _default_rgb_exe() -> str:
+    """Prisma's exe: $HEXPAD_PRISMA_EXE, else the first of its usual places that exists (installed, or a build in the
+    user's own project folder), else the plain name (Windows finds it on PATH)."""
+    env = os.environ.get("HEXPAD_PRISMA_EXE", "").strip()
+    if env:
+        return env
+    home = os.path.expanduser("~")
+    for c in (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "Prisma", "Prisma.exe"),
+              os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Prisma", "Prisma.exe"),
+              os.path.join(home, "Desktop", "project", "Prisma", "dist", "Prisma.exe"),
+              os.path.join(home, "Desktop", "project", "RGBCommander", "dist", "RGBCommander.exe")):
+        if c and os.path.isfile(c):
+            return c
+    return "Prisma.exe"
+
+
+_RGB_EXE = _default_rgb_exe()
 _RGB_PROC_NAMES = ("Prisma.exe", "RGBCommander.exe")   # the RGB app (renamed Prisma; old name kept)
 
 
@@ -1325,11 +1340,16 @@ class ActionEngine:
 
     def _smartlight(self, action: Dict[str, Any]) -> None:
         """Control the Tapo bulb directly (on/off/toggle/colour/relative) — no Lumos app required."""
-        host = (action.get("host") or _TAPO_DEFAULT_HOST).strip()
+        config = getattr(self.controller, "config", None) if self.controller else None
+        host = str(action.get("host") or "").strip()
+        if not host and config is not None:
+            from . import tapo as _tapo
+            host = _tapo.bulb_host(config)      # a key without its own address: the bulb the config knows
+        if not host:
+            return                              # no bulb set up
         mode = (action.get("mode") or "toggle").lower()
         color = action.get("color")
         brightness = action.get("brightness")
-        config = getattr(self.controller, "config", None) if self.controller else None
 
         # Encoder turn: accumulate the change locally and let tapo coalesce/rate-limit the flush,
         # so spinning fast feels instant. nudge() never blocks, so no worker thread is needed.

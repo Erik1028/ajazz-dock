@@ -21,7 +21,7 @@ Built and verified against real hardware (USB **VID `0x0300` / PID `0x3002`**). 
   a rich **weather** folder (Open-Meteo: 7-day / UV / precip / wind / humidity / sun).
 - **Folders** (multi-page), **pages** (unlimited per profile) and **profiles**, switchable from a key,
   button, the tray menu, or the app. Optional **app-aware** auto-switching (foreground app → profile/page).
-- **Ambient idle screen:** 15 clock designs (rainbow, aurora, matrix rain, synthwave, starfield,
+- **Ambient idle screen:** 16 clock designs (rainbow, aurora, matrix rain, synthwave, starfield,
   plasma, lava, flip-clock, nixie…) plus dynamic **now-playing** and **weather** screens that rotate in.
 - **Integrations:** Tapo smart bulbs (python-kasa), RGB scenes, OBS (websocket), Discord voice (RPC).
 - Native dark-themed configurator laid out like the real device: key grid with live previews,
@@ -34,7 +34,7 @@ Built and verified against real hardware (USB **VID `0x0300` / PID `0x3002`**). 
 # one-time setup
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-./build.ps1       # produces dist\Hexpad.exe (single standalone file, no Python needed to run)
+./build.ps1       # produces the dist\Hexpad\ folder with Hexpad.exe (no Python needed to run)
 ./install.ps1     # installs to %LOCALAPPDATA%\Hexpad, makes Start Menu + Desktop shortcuts, enables autostart, launches it
 ```
 

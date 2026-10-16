@@ -727,7 +727,7 @@ def _ping() -> Tuple[str, str, Optional[float]]:
 
 
 # Smart bulb state — polled by a slow background sampler (network call; don't hit it per tick).
-_tapo_host = "192.168.0.87"
+_tapo_host = ""                       # set from the config (tapo.bulb_host) at start
 _tapo_email: Optional[str] = None
 _tapo_pw: Optional[str] = None
 _light_lock = threading.Lock()
@@ -763,7 +763,7 @@ def _start_light_sampler() -> None:
         while True:
             _park_if_idle("light")
             try:
-                if _tapo_email and _tapo_pw:
+                if _tapo_email and _tapo_pw and _tapo_host:
                     on = tapo.is_on(_tapo_host, _tapo_email, _tapo_pw)
                     with _light_lock:
                         _light_on = on
