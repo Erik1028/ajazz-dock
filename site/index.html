@@ -17,6 +17,7 @@
 <script type="application/ld+json">{"@context": "https://schema.org", "@type": "SoftwareApplication", "name": "Hexpad", "url": "https://erik1028.github.io/ajazz-dock/", "description": "A lean, native Windows app for the Ajazz AKP03E stream dock: any action on its keys, buttons and knobs, live keys, idle clock screens and integrations.", "image": "https://erik1028.github.io/ajazz-dock/og.png", "operatingSystem": "Windows 10, Windows 11", "applicationCategory": "UtilitiesApplication", "softwareVersion": "2.0.0", "downloadUrl": "https://github.com/Erik1028/ajazz-dock/releases/latest", "license": "https://opensource.org/licenses/MIT", "isAccessibleForFree": true, "inLanguage": "en", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "author": {"@type": "Person", "name": "Erik1028", "url": "https://github.com/Erik1028"}, "sameAs": ["https://github.com/Erik1028/ajazz-dock"]}</script>
 <link rel="icon" href="favicon.png" type="image/png">
 <link rel="stylesheet" href="style.css">
+<link rel="preload" href="img/keys-home.webp" as="image" type="image/webp">
 </head>
 <body>
 
@@ -39,11 +40,10 @@
 </div>
 
 <div class="stage">
-<div class="dock" id="dock">
-<div class="screen"><img id="screen-a" src="img/keys-home.webp" width="564" height="370" alt="The six keys: live CPU load, mic state, an app folder, the weather, play/pause and a screenshot key"><img id="screen-b" src="img/keys-home.webp" width="564" height="370" alt="" aria-hidden="true"></div>
-<div class="knob big" aria-hidden="true"><i></i></div>
-<div class="btns" aria-hidden="true"><span></span><span></span><span></span></div>
-<div class="smalls" aria-hidden="true"><span class="knob"><i></i></span><span class="knob"><i></i></span></div>
+<div class="dock" id="dock" role="img" aria-label="The six keys: live CPU load, mic state, an app folder, the weather, play/pause and a screenshot key">
+<i class="key k1"></i><i class="key k2"></i><i class="key k3"></i><i class="key k4"></i><i class="key k5"></i><i class="key k6"></i>
+<i class="push p1"></i><i class="push p2"></i><i class="push p3"></i>
+<i class="knob big"></i><i class="knob small s1"></i><i class="knob small s2"></i>
 </div>
 <div class="screens" role="group" aria-label="What the keys show">
 <button type="button" aria-pressed="true" data-src="img/keys-home.webp" data-alt="The six keys: live CPU load, mic state, an app folder, the weather, play/pause and a screenshot key">Keys</button>

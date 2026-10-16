@@ -79,22 +79,31 @@ footer p{max-width:42em}
 .btn{background:var(--spectrum);box-shadow:0 10px 30px rgba(227,71,157,.30)}
 @media (max-width:900px){.intro{grid-template-columns:1fr}}
 
-/* the dock: keys 2x3 on the left, round buttons under them, a big knob and two small ones on the right
-   (the same arrangement the configurator draws) */
-.dock{display:grid;grid-template-columns:minmax(0,1fr) auto;grid-template-areas:"screen big" "btns smalls";gap:16px 22px;align-items:center;
-  padding:22px 24px 18px;border-radius:26px;background:linear-gradient(160deg,#1c1c22,#0f0f13 55%,#0b0b0e);
+/* the dock: the AKP03E as it is laid out, in the arrangement and proportions the configurator draws (the same as
+   the Hexpad card on erik1028.github.io): six separate screen keys 2x3, three round buttons under them, a big knob
+   on the right and two small ones below it. Each key shows its own tile of a picture Hexpad's renderer drew
+   (176 px keys, 18 px apart); a chip changes the picture on all six at once, cross-fading --a and --b. */
+.dock{--a:url(img/keys-home.webp);--b:none;position:relative;aspect-ratio:1260/797;border-radius:4.4%/7%;
+  background:linear-gradient(160deg,#1c1c22,#0f0f13 55%,#0b0b0e);
   border:1px solid #2b2b33;box-shadow:0 40px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06)}
-.screen{grid-area:screen;position:relative;border-radius:8px;overflow:hidden;background:#000;box-shadow:0 0 0 3px #050506,0 0 40px rgba(242,99,117,.10)}
-.screen img{width:100%;height:auto;transition:opacity .45s ease}
-.screen img + img{position:absolute;inset:0;opacity:0}
-.knob{display:block;position:relative;border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a3a44,#17171c 62%,#0d0d10);
+.dock>i{position:absolute;display:block;aspect-ratio:1}
+.dock .key{width:19%;border-radius:11%;overflow:hidden;background:#000 var(--a) no-repeat;background-size:320.45% 210.23%;
+  box-shadow:0 0 0 2px #050506,0 0 0 3.5px #2c2c35,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(242,99,117,.06)}
+.dock .key::after{content:"";position:absolute;inset:0;background:var(--b) no-repeat;background-size:inherit;background-position:inherit;
+  opacity:0;transition:opacity .45s ease}
+.dock.b .key::after{opacity:1}
+.dock .k1,.dock .k4{left:3.4%}.dock .k2,.dock .k5{left:24.7%}.dock .k3,.dock .k6{left:46%}
+.dock .k1,.dock .k2,.dock .k3{top:9.8%}.dock .k4,.dock .k5,.dock .k6{top:43.4%}
+.dock .k1,.dock .k4{background-position-x:0}.dock .k2,.dock .k5{background-position-x:50%}.dock .k3,.dock .k6{background-position-x:100%}
+.dock .k1,.dock .k2,.dock .k3{background-position-y:0}.dock .k4,.dock .k5,.dock .k6{background-position-y:100%}
+.dock .push{width:8.1%;top:77.7%;border-radius:50%;background:radial-gradient(circle at 40% 35%,#26262d,#111115);
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 2px #08080a}
+.dock .p1{left:8.85%}.dock .p2{left:30.15%}.dock .p3{left:51.45%}
+.dock .knob{border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a3a44,#17171c 62%,#0d0d10);
   box-shadow:0 6px 14px rgba(0,0,0,.55),inset 0 1px 1px rgba(255,255,255,.12),0 0 0 2px #0a0a0c;transition:transform .7s cubic-bezier(.2,.7,.2,1)}
-.knob i{position:absolute;left:50%;top:9%;width:3px;height:22%;margin-left:-1.5px;border-radius:2px;background:#cfcfd8}
-.knob.big{grid-area:big;width:clamp(78px,10vw,112px);aspect-ratio:1}
-.smalls{grid-area:smalls;display:flex;gap:14px;justify-content:center}
-.smalls .knob{width:clamp(40px,4.6vw,52px);aspect-ratio:1}
-.btns{grid-area:btns;display:grid;grid-template-columns:repeat(3,1fr);justify-items:center}
-.btns span{width:clamp(30px,3.4vw,40px);aspect-ratio:1;border-radius:50%;background:radial-gradient(circle at 40% 35%,#26262d,#111115);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 2px #08080a}
+.dock .knob::after{content:"";position:absolute;left:50%;top:9%;width:max(2px,2.7%);height:22%;transform:translateX(-50%);border-radius:2px;background:#cfcfd8}
+.dock .knob.big{width:21.3%;left:72.35%;top:25.6%}
+.dock .knob.small{width:10.8%;top:74.6%}.dock .s1{left:69.8%}.dock .s2{left:85.4%}
 .screens{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
 .screens button{font:inherit;font-size:14px;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 13px;cursor:pointer}
 .screens button:hover{color:var(--text);border-color:#3a3a46}
@@ -116,8 +125,8 @@ pre{margin:10px 0 0;background:var(--panel);border:1px solid var(--line);border-
 pre code{background:none;border:0;padding:0;font-size:inherit;overflow-wrap:normal}
 .card .shot img{transition:transform .5s cubic-bezier(.2,.7,.2,1)}
 .card:hover .shot img{transform:scale(1.04)}
-@media (prefers-reduced-motion:reduce){.card .shot img,.screen img,.knob{transition:none}}
-@media (max-width:640px){.dock{padding:16px 16px 14px;gap:12px 14px;border-radius:20px}.intro{padding-top:24px}}
+@media (prefers-reduced-motion:reduce){.card .shot img,.dock .key::after,.dock .knob{transition:none}}
+@media (max-width:640px){.intro{padding-top:24px}}
 
 /* scroll motion (motion.js): only when the script runs and motion is allowed */
 .motion [data-reveal]{transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0ms)}
