@@ -99,6 +99,7 @@
 <li>Run <code>Hexpad\Hexpad.exe</code> and plug in the dock. Hexpad lives in the tray: right-click its icon for the configurator and <i>Start with Windows</i>.</li>
 </ol>
 <p class="aside">Needs Windows 10 or 11 and an <strong>Ajazz AKP03E</strong> (USB ID <code>0300:3002</code>), the only dock it supports. Hexpad runs with administrator rights so it can read CPU and GPU temperatures: Windows asks when you start it by hand, the start-with-Windows task doesn't. SmartScreen may warn, because Hexpad isn't signed: <i>More info › Run anyway</i>. The weather comes from Open-Meteo. Settings are a plain JSON file in <code>%APPDATA%\AjazzDock</code>, so they stay when you replace the folder with a newer version.</p>
+<p class="aside">Found a bug, or have an idea? <a href="https://github.com/Erik1028/ajazz-dock/issues/new">Tell me on GitHub</a>. To hear about new versions, follow the <a href="https://github.com/Erik1028/ajazz-dock/releases.atom">releases feed</a> (RSS) or watch the repository's releases on GitHub.</p>
 <details class="aside src">
 <summary>Or build it from the source</summary>
 <p>With <a href="https://www.python.org/downloads/windows/">Python 3</a> installed, <a href="https://github.com/Erik1028/ajazz-dock/archive/refs/heads/main.zip">download the source</a>, unzip it, open PowerShell in that folder and run:</p>
@@ -121,6 +122,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1</code></pre>
 </footer>
 
 <script src="hexpad.js"></script>
+<script src="handoff.js"></script>
 <script src="motion.js"></script>
 </body>
 </html>
