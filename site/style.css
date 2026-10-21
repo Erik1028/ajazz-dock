@@ -1,10 +1,11 @@
-/* Hexpad: the app icon's colours - a dark slab (#0b0b0e) with keys cut from one spectrum,
-   violet #8d3cdf -> pink #e3479d -> coral #f26375 -> orange #f87c58. */
+/* Hexpad: the configurator's midnight + mint (the app-family look since 2.0): a midnight canvas #0e0f15, panels
+   #151a26, the dock slab #1d2130 and one mint accent #3ae0a0 for what is selected or pressable. The app icon keeps
+   its own colours. */
 :root{
   color-scheme:dark;
-  --bg:#0b0b0e; --panel:#15151b; --line:#26262f; --text:#eeedf2; --dim:#a19fae;
-  --accent:#f26375; --on-accent:#fff; --accent-soft:rgba(242,99,117,.14); --ok:#35e08a;
-  --spectrum:linear-gradient(90deg,#8d3cdf,#e3479d 45%,#f26375 70%,#f87c58);
+  --bg:#0e0f15; --panel:#151a26; --line:#262c3a; --text:#e6e9ef; --dim:#9aa3b2;
+  --accent:#3ae0a0; --on-accent:#06140d; --accent-soft:rgba(58,224,160,.14); --ok:#35e08a;
+  --mint:linear-gradient(90deg,#3ae0a0,#4cc3d9 55%,#5b8cff);
   --sans:"Segoe UI Variable Text","Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   --display:"Segoe UI Variable Display","Segoe UI Variable","Segoe UI",system-ui,-apple-system,"Helvetica Neue",Arial,sans-serif;
   --mono:"Cascadia Mono",Consolas,ui-monospace,"SF Mono",Menlo,monospace;
@@ -71,12 +72,13 @@ footer p{max-width:42em}
 /* ---- Hexpad only: the dock itself in the hero, its keys switching between what it can show ---- */
 .band{position:relative;overflow:hidden;isolation:isolate}
 .band::before{content:"";position:absolute;z-index:-1;width:900px;height:620px;right:-160px;top:-120px;
-  background:radial-gradient(closest-side,rgba(227,71,157,.20),rgba(141,60,223,.10) 55%,transparent);filter:blur(10px)}
+  background:radial-gradient(closest-side,rgba(58,224,160,.16),rgba(61,120,255,.09) 55%,transparent);filter:blur(10px)}
 .intro{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.08fr);gap:40px 56px;align-items:center;padding-block:40px 24px}
-.intro h1{font-size:clamp(52px,8vw,96px);letter-spacing:-0.035em;background:var(--spectrum);-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:.06em}
+.intro h1{font-size:clamp(52px,8vw,96px);letter-spacing:-0.035em;background:var(--mint);-webkit-background-clip:text;background-clip:text;color:transparent;padding-bottom:.06em}
 .intro p strong{color:var(--text);font-weight:600}
 .get{margin-top:28px}
-.btn{background:var(--spectrum);box-shadow:0 10px 30px rgba(227,71,157,.30)}
+.btn{background:var(--accent);color:var(--on-accent);box-shadow:0 10px 30px rgba(58,224,160,.25)}
+.btn:hover{color:var(--on-accent)}
 @media (max-width:900px){.intro{grid-template-columns:1fr}}
 
 /* the dock: the AKP03E as it is laid out, in the arrangement and proportions the configurator draws (the same as
@@ -84,11 +86,11 @@ footer p{max-width:42em}
    on the right and two small ones below it. Each key shows its own tile of a picture Hexpad's renderer drew
    (176 px keys, 18 px apart); a chip changes the picture on all six at once, cross-fading --a and --b. */
 .dock{--a:url(img/keys-home.webp);--b:none;position:relative;aspect-ratio:1260/797;border-radius:4.4%/7%;
-  background:linear-gradient(160deg,#1c1c22,#0f0f13 55%,#0b0b0e);
-  border:1px solid #2b2b33;box-shadow:0 40px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06)}
+  background:linear-gradient(160deg,#222739,#171b28 55%,#11141d);
+  border:1px solid #2c3340;box-shadow:0 40px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.06)}
 .dock>i{position:absolute;display:block;aspect-ratio:1}
 .dock .key{width:17.6%;border-radius:11%;overflow:hidden;background:#000 var(--a) no-repeat;background-size:320.45% 210.23%;
-  box-shadow:0 0 0 2px #050506,0 0 0 3.5px #2c2c35,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(242,99,117,.06)}
+  box-shadow:0 0 0 2px #050506,0 0 0 3.5px #2a3140,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(58,224,160,.06)}
 .dock .key::after{content:"";position:absolute;inset:0;background:var(--b) no-repeat;background-size:inherit;background-position:inherit;
   opacity:0;transition:opacity .45s ease}
 .dock.b .key::after{opacity:1}
@@ -96,18 +98,18 @@ footer p{max-width:42em}
 .dock .k1,.dock .k2,.dock .k3{top:10.3%}.dock .k4,.dock .k5,.dock .k6{top:45.1%}
 .dock .k1,.dock .k4{background-position-x:0}.dock .k2,.dock .k5{background-position-x:50%}.dock .k3,.dock .k6{background-position-x:100%}
 .dock .k1,.dock .k2,.dock .k3{background-position-y:0}.dock .k4,.dock .k5,.dock .k6{background-position-y:100%}
-.dock .push{width:8.1%;top:77.7%;border-radius:50%;background:radial-gradient(circle at 40% 35%,#26262d,#111115);
+.dock .push{width:8.1%;top:77.7%;border-radius:50%;background:radial-gradient(circle at 40% 35%,#262c3b,#10131b);
   box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 0 2px #08080a}
 .dock .p1{left:8.15%}.dock .p2{left:30.15%}.dock .p3{left:52.15%}
-.dock .knob{border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a3a44,#17171c 62%,#0d0d10);
+.dock .knob{border-radius:50%;background:radial-gradient(circle at 35% 30%,#3a4152,#181c27 62%,#0d0f15);
   box-shadow:0 6px 14px rgba(0,0,0,.55),inset 0 1px 1px rgba(255,255,255,.12),0 0 0 2px #0a0a0c;transition:transform .7s cubic-bezier(.2,.7,.2,1)}
-.dock .knob::after{content:"";position:absolute;left:50%;top:9%;width:max(2px,2.7%);height:22%;transform:translateX(-50%);border-radius:2px;background:#cfcfd8}
+.dock .knob::after{content:"";position:absolute;left:50%;top:9%;width:max(2px,2.7%);height:22%;transform:translateX(-50%);border-radius:2px;background:#cfd5e0}
 .dock .knob.big{width:21.3%;left:72.35%;top:25.6%}
 .dock .knob.small{width:10.8%;top:74.6%}.dock .s1{left:69.8%}.dock .s2{left:85.4%}
 .screens{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
 .screens button{font:inherit;font-size:14px;color:var(--dim);background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:6px 13px;cursor:pointer}
-.screens button:hover{color:var(--text);border-color:#3a3a46}
-.screens button[aria-pressed="true"]{color:#fff;border-color:transparent;background:var(--spectrum)}
+.screens button:hover{color:var(--text);border-color:#3a4256}
+.screens button[aria-pressed="true"]{color:var(--on-accent);border-color:transparent;background:var(--accent);font-weight:600}
 .intro .stage .cap{margin-top:12px;font-size:14px;max-width:none}
 /* the dock is positioned (its keys sit inside it), so its big drop shadow paints after plain boxes; the chips and the
    caption under it are positioned too, so they stay on top of that shadow as before */
@@ -116,7 +118,7 @@ footer p{max-width:42em}
 .card .shot img{object-position:center}
 
 .hero-shot{margin:40px 0 0}
-.hero-shot .shot{border-radius:18px;border-color:#2b2b33;box-shadow:0 40px 90px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04)}
+.hero-shot .shot{border-radius:18px;border-color:#2c3340;box-shadow:0 40px 90px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.04)}
 
 .acts{margin:24px 0 0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 48px}
 .acts div{padding:14px 0;border-top:1px solid var(--line)}
@@ -130,8 +132,8 @@ pre code{background:none;border:0;padding:0;font-size:inherit;overflow-wrap:norm
 .card:hover .shot img{transform:scale(1.04)}
 @media (prefers-reduced-motion:reduce){.card .shot img,.dock .key::after,.dock .knob{transition:none}}
 @media (max-width:640px){.intro{padding-top:24px}
-  .dock .key{box-shadow:0 0 0 1.5px #050506,0 0 0 2.5px #2c2c35,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(242,99,117,.06)}}
-@media (max-width:375px){.dock .key{box-shadow:0 0 0 1px #050506,0 0 0 2px #2c2c35,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(242,99,117,.06)}}
+  .dock .key{box-shadow:0 0 0 1.5px #050506,0 0 0 2.5px #2a3140,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(58,224,160,.06)}}
+@media (max-width:375px){.dock .key{box-shadow:0 0 0 1px #050506,0 0 0 2px #2a3140,0 8px 18px rgba(0,0,0,.5),0 0 28px rgba(58,224,160,.06)}}
 
 /* scroll motion (motion.js): only when the script runs and motion is allowed */
 .motion [data-reveal]{transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1);transition-delay:var(--d,0ms)}
